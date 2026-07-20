@@ -2391,7 +2391,7 @@ fn test_finish_turn_auto_pokes_again_when_todos_remain() {
 
         assert!(app.pending_queued_dispatch);
         assert_eq!(app.queued_messages().len(), 1);
-        assert!(app.queued_messages()[0].contains("Continue working, or update the todo tool."));
+        assert!(app.queued_messages()[0].contains("update the todo tool."));
     });
 }
 

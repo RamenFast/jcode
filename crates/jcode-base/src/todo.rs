@@ -112,9 +112,17 @@ pub fn spike_completed_todos(todos: &[TodoItem]) -> Vec<&TodoItem> {
 /// Build the synthetic auto-poke continuation prompt sent when the model
 /// stops with incomplete todos. Kept here so every producer (TUI auto-poke,
 /// `jcode run` auto-poke) and the transcript renderer agree on the exact text.
+///
+/// Tone matters: this line lands mid-flow, sometimes repeatedly, and is read
+/// by the human in the transcript too. A terse imperative reads as cold
+/// ("threw me off" — user feedback, 2026-07-20). Keep it warm and honest
+/// about the two legitimate outs (keep going, or the plan moved on) while
+/// preserving the three detection anchors `is_auto_poke_message` relies on:
+/// the "You have " prefix, " incomplete todo" marker, and the
+/// "update the todo tool." suffix.
 pub fn build_auto_poke_message(incomplete_count: usize) -> String {
     format!(
-        "You have {} incomplete todo{}. Continue working, or update the todo tool.",
+        "You have {} incomplete todo{}. No rush — pick the work back up when ready, or if it's already done or the plan has changed, update the todo tool.",
         incomplete_count,
         if incomplete_count == 1 { "" } else { "s" },
     )

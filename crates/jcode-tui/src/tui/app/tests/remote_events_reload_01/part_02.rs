@@ -120,7 +120,7 @@ fn test_remote_auto_poke_followup_preserves_visible_timer_and_stays_hidden() {
             msg.role == "user"
                 && msg
                     .content
-                    .contains("Continue working, or update the todo tool.")
+                    .contains("update the todo tool.")
         }));
     });
 }

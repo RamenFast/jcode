@@ -340,10 +340,12 @@ fn run_auto_poke_followup_prioritizes_incomplete_todos() {
     match followup {
         Some(RunAutoPokeFollowUp::Incomplete { count, message }) => {
             assert_eq!(count, 1);
-            assert_eq!(
-                message,
-                "You have 1 incomplete todo. Continue working, or update the todo tool."
-            );
+            // The exact wording is owned by build_auto_poke_message (and may
+            // warm up over time); this test pins the contract: the count and
+            // the detection anchors, not the prose.
+            assert_eq!(message, crate::todo::build_auto_poke_message(1));
+            assert!(message.starts_with("You have 1 incomplete todo"));
+            assert!(message.ends_with("update the todo tool."));
         }
         _ => panic!("expected incomplete-todo follow-up"),
     }
