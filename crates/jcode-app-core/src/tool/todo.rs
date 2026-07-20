@@ -2,9 +2,9 @@ use super::{Tool, ToolContext, ToolOutput};
 use crate::bus::{Bus, BusEvent, TodoEvent};
 use crate::todo::{
     LOW_HILL_CLIMBABILITY, TODO_HILL_CLIMBABILITY_CONTINUATION_MESSAGE,
-    TODO_OWNERSHIP_CONTINUATION_MESSAGE, TodoGoal, TodoGoalChange, TodoGoalField, TodoItem,
-    load_goals, load_todos, newly_completed_groups_have_sufficient_ownership, save_goals,
-    save_todos,
+    TODO_OWNERSHIP_CONTINUATION_MESSAGE, TODO_WRITE_REJECTED_NOTICE, TodoGoal, TodoGoalChange,
+    TodoGoalField, TodoItem, load_goals, load_todos,
+    newly_completed_groups_have_sufficient_ownership, save_goals, save_todos,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -465,11 +465,20 @@ impl Tool for TodoTool {
                 let goals = merge_goals(&stored_goals, params.goals);
                 if !newly_completed_groups_have_sufficient_ownership(&previous, &todos, &goals) {
                     crate::telemetry::record_todo_gate(crate::telemetry::TodoGateKind::Ownership);
+                    // The refusal must be visible AS a refusal: returning the
+                    // stored (pre-write) state without saying so reads as a
+                    // silent no-op and sends the model into a retry loop
+                    // against an invisible wall (observed live, 2026-07-20:
+                    // six identical rejected writes diagnosed as "the todo
+                    // store is frozen").
                     return build_todo_output(
                         previous,
                         stored_goals,
                         None,
-                        [TODO_OWNERSHIP_CONTINUATION_MESSAGE.to_string()],
+                        [
+                            TODO_WRITE_REJECTED_NOTICE.to_string(),
+                            TODO_OWNERSHIP_CONTINUATION_MESSAGE.to_string(),
+                        ],
                     );
                 }
                 let nudges = take_reframe_nudges(&goals, &todos);
@@ -782,7 +791,10 @@ mod tests {
             todos.clone(),
             goals.clone(),
             None,
-            [TODO_OWNERSHIP_CONTINUATION_MESSAGE.to_string()],
+            [
+                TODO_WRITE_REJECTED_NOTICE.to_string(),
+                TODO_OWNERSHIP_CONTINUATION_MESSAGE.to_string(),
+            ],
         )
         .expect("ownership gate should produce a structured todo result");
 
@@ -794,6 +806,35 @@ mod tests {
             output.metadata,
             Some(json!({"todos": todos, "goals": goals}))
         );
+    }
+
+    #[test]
+    fn gated_rejection_declares_itself_not_saved() {
+        // Regression (2026-07-20): a gated write silently returned the stored
+        // state, which the model read as a frozen store and retried against
+        // six times. The rejection must say, in the output, that nothing was
+        // saved — while still disclosing no scores or thresholds.
+        let output = build_todo_output(
+            vec![open_todo(Some("ship"))],
+            vec![goal(Some("ship"), 96)],
+            None,
+            [
+                TODO_WRITE_REJECTED_NOTICE.to_string(),
+                TODO_OWNERSHIP_CONTINUATION_MESSAGE.to_string(),
+            ],
+        )
+        .expect("rejection output should build");
+
+        assert!(output.output.contains("NOT saved"));
+        assert!(output.output.contains("previously stored state"));
+        assert!(output.output.contains(TODO_OWNERSHIP_CONTINUATION_MESSAGE));
+        let lower = TODO_WRITE_REJECTED_NOTICE.to_ascii_lowercase();
+        for disclosure in ["threshold", "score", "96", "quality gate"] {
+            assert!(
+                !lower.contains(disclosure),
+                "rejection notice disclosed calibration: {disclosure}"
+            );
+        }
     }
 
     #[test]

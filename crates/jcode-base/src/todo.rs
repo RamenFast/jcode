@@ -22,6 +22,14 @@ pub const TODO_HILL_CLIMBABILITY_CONTINUATION_MESSAGE: &str = "Your hill-climbab
 /// the assessment category without disclosing the score or threshold.
 pub const TODO_OWNERSHIP_CONTINUATION_MESSAGE: &str = "Your end-to-end ownership is not high enough to complete this goal. Take ownership of the full user outcome, not just the immediate implementation. Follow the work through every relevant integration and runtime path, resolve consequential gaps, validate the complete workflow, and finish the necessary follow-through.";
 
+/// Model-facing notice that a gated todo write was refused. Without this, a
+/// rejected write returns the previously stored list with only the assessment
+/// continuation appended — which reads as a silent no-op ("the store is
+/// frozen") rather than a refusal, and the model loops retrying identical
+/// writes against an invisible wall. A refusal must carry the fact of refusal;
+/// it still discloses no scores or thresholds.
+pub const TODO_WRITE_REJECTED_NOTICE: &str = "This update was NOT saved. The todo list and goals shown are the previously stored state, unchanged. Address the assessment below, then write again.";
+
 /// Model-facing continuation for private completion-confidence checks. Names
 /// the assessment category without disclosing scores, items, or thresholds.
 pub const TODO_COMPLETION_CONTINUATION_MESSAGE: &str = "Your completion confidence is missing or not high enough. Validate the completed result more thoroughly, address any remaining issues, and then reassess whether the work is ready to finalize.";
