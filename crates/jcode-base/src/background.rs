@@ -829,8 +829,18 @@ impl BackgroundTaskManager {
             }
         }
 
-        // Sort by task_id (which includes timestamp)
-        results.sort_by(|a, b| b.task_id.cmp(&a.task_id));
+        // Newest first. Sort by start time, not task_id: the id's leading
+        // 6 digits are the LAST six digits of a millisecond timestamp, which
+        // wrap roughly every 16.7 minutes — lexical id order can rank an
+        // hours-old task "newest" (observed live: `bg wait latest=true`
+        // grabbed a long-finished task over the one just spawned).
+        // `started_at` is RFC3339 (fixed-width UTC), so string comparison is
+        // chronological; ties fall back to task_id for determinism.
+        results.sort_by(|a, b| {
+            b.started_at
+                .cmp(&a.started_at)
+                .then_with(|| b.task_id.cmp(&a.task_id))
+        });
         results
     }
 

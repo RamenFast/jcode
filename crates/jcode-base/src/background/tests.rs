@@ -562,3 +562,52 @@ async fn abort_live_tasks_for_reload_keeps_naturally_finished_status() -> Result
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn list_orders_by_start_time_not_lexical_task_id() -> Result<()> {
+    // Regression: task ids begin with the LAST six digits of a millisecond
+    // timestamp, which wrap ~every 16.7 minutes. A task started hours later
+    // can carry a lexically SMALLER id, so sorting by id ranked the old task
+    // "newest" and `bg wait latest=true` picked it (observed live 2026-07-20).
+    let tmp = tempdir()?;
+    let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
+
+    let write = |task_id: &str, started_at: &str| {
+        let path = manager.status_path_for(task_id);
+        let status = TaskStatusFile {
+            task_id: task_id.to_string(),
+            tool_name: "bash".to_string(),
+            display_name: None,
+            session_id: "session-order".to_string(),
+            status: BackgroundTaskStatus::Completed,
+            exit_code: Some(0),
+            error: None,
+            started_at: started_at.to_string(),
+            completed_at: Some(started_at.to_string()),
+            duration_secs: Some(0.1),
+            pid: None,
+            owner_pid: None,
+            owner_instance: None,
+            detached: false,
+            notify: true,
+            wake: false,
+            progress: None,
+            event_history: Vec::new(),
+        };
+        std::fs::write(path, serde_json::to_string(&status).unwrap()).unwrap();
+    };
+
+    // The older task's timestamp-suffix id is lexically LARGER (966… > 130…),
+    // exactly the wrap case: id order and time order disagree.
+    write("966882b994", "2026-07-20T07:36:06.882Z");
+    write("130497adew", "2026-07-20T07:55:30.497Z");
+
+    let tasks = manager.list().await;
+    let ids: Vec<&str> = tasks.iter().map(|task| task.task_id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["130497adew", "966882b994"],
+        "list() must rank the chronologically newest task first"
+    );
+    Ok(())
+}
