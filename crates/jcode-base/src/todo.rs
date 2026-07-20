@@ -15,12 +15,14 @@ pub const QUALITY_GATE_THRESHOLD: u8 = 96;
 pub const LOW_HILL_CLIMBABILITY: u8 = QUALITY_GATE_THRESHOLD;
 
 /// Model-facing continuation for the private hill-climbability check. Names the
-/// assessment category without disclosing the score or threshold.
-pub const TODO_HILL_CLIMBABILITY_CONTINUATION_MESSAGE: &str = "Your hill-climbability is not high enough. First, improve the goal's objective and feedback loop so progress can be measured across iterations. Then call the todo tool again with the revised goal before continuing the task. The goal is to create a strong feedback loop you can iterate against.";
+/// assessment category without disclosing the score or threshold. Gentle-coding
+/// voice: the gate is an invitation to sharpen the loop, not a scolding — but it
+/// must keep its anchor phrases (guard-tested) and disclose no calibration.
+pub const TODO_HILL_CLIMBABILITY_CONTINUATION_MESSAGE: &str = "Your hill-climbability is not high enough yet — this goal deserves a loop you can actually climb. First, improve the goal's objective and feedback loop so progress can be measured across iterations. Then call the todo tool again with the revised goal before continuing the task. The goal is to create a strong feedback loop you can iterate against.";
 
 /// Model-facing continuation for the private end-to-end ownership check. Names
 /// the assessment category without disclosing the score or threshold.
-pub const TODO_OWNERSHIP_CONTINUATION_MESSAGE: &str = "Your end-to-end ownership is not high enough to complete this goal. Take ownership of the full user outcome, not just the immediate implementation. Follow the work through every relevant integration and runtime path, resolve consequential gaps, validate the complete workflow, and finish the necessary follow-through.";
+pub const TODO_OWNERSHIP_CONTINUATION_MESSAGE: &str = "Your end-to-end ownership is not high enough to complete this goal yet — the work is close; carry it the rest of the way. Take ownership of the full user outcome, not just the immediate implementation. Follow the work through every relevant integration and runtime path, resolve consequential gaps, validate the complete workflow, and finish the necessary follow-through.";
 
 /// Model-facing notice that a gated todo write was refused. Without this, a
 /// rejected write returns the previously stored list with only the assessment
@@ -32,12 +34,12 @@ pub const TODO_WRITE_REJECTED_NOTICE: &str = "This update was NOT saved. The tod
 
 /// Model-facing continuation for private completion-confidence checks. Names
 /// the assessment category without disclosing scores, items, or thresholds.
-pub const TODO_COMPLETION_CONTINUATION_MESSAGE: &str = "Your completion confidence is missing or not high enough. Validate the completed result more thoroughly, address any remaining issues, and then reassess whether the work is ready to finalize.";
+pub const TODO_COMPLETION_CONTINUATION_MESSAGE: &str = "Your completion confidence is missing or not high enough yet — worth one more look before calling it done. Validate the completed result more thoroughly, address any remaining issues, and then reassess whether the work is ready to finalize.";
 
 /// Model-facing continuation for a completed todo whose confidence rose too
 /// sharply at the end. It names the behavior without disclosing the numeric
 /// cutoff, individual todo, or recorded scores.
-pub const TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE: &str = "Your completion confidence rose too sharply to count as independently validated. Recheck the completed result using concrete evidence, address any issues you find, and then reassess whether the work is ready to finalize.";
+pub const TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE: &str = "Your completion confidence rose too sharply to count as independently validated — evidence earns certainty in steps, not a final leap. Recheck the completed result using concrete evidence, address any issues you find, and then reassess whether the work is ready to finalize.";
 
 /// A completed todo is considered spike-finished when its final recorded
 /// confidence increase is at least this large.
