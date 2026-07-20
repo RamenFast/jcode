@@ -1378,7 +1378,7 @@ impl BackgroundTaskManager {
             return (0, Vec::new(), None);
         };
 
-        let mut rows: Vec<RunningBackgroundProgress> = Vec::new();
+        let mut rows: Vec<(String, RunningBackgroundProgress)> = Vec::new();
         for task in tasks.values() {
             let status = std::fs::read_to_string(&task.status_path)
                 .ok()
@@ -1390,15 +1390,23 @@ impl BackgroundTaskManager {
                 .or_else(|| task.display_name.clone())
                 .unwrap_or_else(|| task.tool_name.clone());
 
-            rows.push(RunningBackgroundProgress {
-                task_id: task.task_id.clone(),
-                tool_name: task.tool_name.clone(),
-                label,
-                detail: progress.map(|progress| format_progress_display(&progress, 10)),
-            });
+            rows.push((
+                task.started_at_rfc3339.clone(),
+                RunningBackgroundProgress {
+                    task_id: task.task_id.clone(),
+                    tool_name: task.tool_name.clone(),
+                    label,
+                    detail: progress.map(|progress| format_progress_display(&progress, 10)),
+                },
+            ));
         }
 
-        rows.sort_by(|a, b| b.task_id.cmp(&a.task_id));
+        // Newest first by start time (same wrap hazard as list(): the id's
+        // timestamp prefix is truncated and wraps, so id order is not time
+        // order). RFC3339 strings compare chronologically.
+        rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.task_id.cmp(&a.1.task_id)));
+        let rows: Vec<RunningBackgroundProgress> =
+            rows.into_iter().map(|(_, row)| row).collect();
         let latest = rows.iter().find(|row| row.detail.is_some()).cloned();
 
         (
