@@ -1,4 +1,4 @@
-use super::AmbientRunnerHandle;
+use super::{AmbientRunnerHandle, provider_with_ambient_config};
 use crate::ambient::{Priority, ScheduleTarget, ScheduledItem};
 use crate::message::{Message, Role, StreamEvent, ToolDefinition};
 use crate::provider::{EventStream, Provider};
@@ -34,6 +34,75 @@ impl Drop for EnvVarGuard {
 }
 
 struct TestProvider;
+
+#[derive(Clone, Default)]
+struct AmbientOverrideProvider {
+    active_provider: Arc<StdMutex<String>>,
+    model: Arc<StdMutex<String>>,
+}
+
+#[async_trait]
+impl Provider for AmbientOverrideProvider {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolDefinition],
+        _system: &str,
+        _resume_session_id: Option<&str>,
+    ) -> Result<EventStream> {
+        unreachable!("ambient override test does not perform completions")
+    }
+
+    fn name(&self) -> &str {
+        "test"
+    }
+
+    fn model(&self) -> String {
+        self.model.lock().expect("ambient model lock").clone()
+    }
+
+    fn set_model(&self, model: &str) -> Result<()> {
+        *self.model.lock().expect("ambient model lock") = model.to_string();
+        Ok(())
+    }
+
+    fn switch_active_provider_to(&self, provider: &str) -> Result<()> {
+        *self.active_provider.lock().expect("ambient provider lock") = provider.to_string();
+        Ok(())
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(self.clone())
+    }
+}
+
+#[test]
+fn ambient_provider_honors_configured_provider_and_model() {
+    let template = AmbientOverrideProvider::default();
+    let active_provider = Arc::clone(&template.active_provider);
+    let active_model = Arc::clone(&template.model);
+    let template: Arc<dyn Provider> = Arc::new(template);
+    let config = crate::config::AmbientConfig {
+        provider: Some("openai".to_string()),
+        model: Some("openai-oauth:gpt-5.6-sol".to_string()),
+        ..Default::default()
+    };
+
+    let provider = provider_with_ambient_config(&template, &config);
+
+    assert_eq!(
+        active_provider
+            .lock()
+            .expect("ambient provider lock")
+            .as_str(),
+        "openai"
+    );
+    assert_eq!(
+        active_model.lock().expect("ambient model lock").as_str(),
+        "openai-oauth:gpt-5.6-sol"
+    );
+    assert_eq!(provider.model(), "openai-oauth:gpt-5.6-sol");
+}
 
 #[derive(Clone, Default)]
 struct StreamingTestProvider {

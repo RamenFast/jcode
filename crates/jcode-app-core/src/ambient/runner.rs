@@ -531,6 +531,7 @@ impl AmbientRunnerHandle {
 
     /// Start the background ambient loop. Call from a tokio::spawn.
     pub async fn run_loop(self, provider: Arc<dyn Provider>) {
+        let provider = provider_with_ambient_config(&provider, &config().ambient);
         {
             let mut running = self.inner.running.write().await;
             *running = true;
@@ -1065,6 +1066,41 @@ impl AmbientRunnerHandle {
             }
         }
     }
+}
+
+fn provider_with_ambient_config(
+    provider_template: &Arc<dyn Provider>,
+    ambient_config: &crate::config::AmbientConfig,
+) -> Arc<dyn Provider> {
+    let provider = provider_template.fork_for_new_session();
+
+    if let Some(provider_override) = ambient_config
+        .provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty())
+        && let Err(error) = provider.switch_active_provider_to(provider_override)
+    {
+        logging::warn(&format!(
+            "Ambient provider override '{}' could not be applied: {}",
+            provider_override, error
+        ));
+    }
+
+    if let Some(model_override) = ambient_config
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        && let Err(error) = provider.set_model(model_override)
+    {
+        logging::warn(&format!(
+            "Ambient model override '{}' could not be applied: {}",
+            model_override, error
+        ));
+    }
+
+    provider
 }
 
 // ---------------------------------------------------------------------------
