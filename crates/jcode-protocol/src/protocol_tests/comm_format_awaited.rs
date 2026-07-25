@@ -53,3 +53,23 @@ fn awaited_members_header_incomplete() {
         "expected incomplete header, got: {output}"
     );
 }
+
+#[test]
+fn awaited_members_header_calls_out_failures() {
+    let mut failed = awaited_member("fox", true);
+    failed.status = "failed".to_string();
+    failed.completion_report = Some("Worker vanished before reporting.".to_string());
+    let output = format_comm_awaited_members_with_reports(
+        true,
+        "All 1 watched members reached a target status: fox (failed). Failures require attention: fox.",
+        &[failed],
+        &std::collections::HashMap::new(),
+    );
+
+    assert!(
+        output.starts_with("Await resolved with failures."),
+        "failure must not be presented as successful completion, got: {output}"
+    );
+    assert!(output.contains("Worker vanished before reporting."));
+    assert!(!output.starts_with("All members done."));
+}

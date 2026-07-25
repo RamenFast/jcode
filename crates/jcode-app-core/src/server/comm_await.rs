@@ -10,16 +10,25 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{RwLock, broadcast, mpsc};
 
-pub(super) async fn awaited_member_statuses(
+const VANISHED_MEMBER_REPORT: &str = "Worker vanished before reporting a terminal status. Treat this as a failure and inspect or retry its assigned work.";
+
+struct AwaitedMembersSnapshot {
+    members: Vec<AwaitedMemberStatus>,
+    observed_ids: Vec<String>,
+    present_ids: HashSet<String>,
+}
+
+async fn awaited_member_statuses(
     req_session_id: &str,
     swarm_id: &str,
     requested_ids: &[String],
+    observed_ids: &[String],
     target_status: &[String],
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
-) -> Vec<AwaitedMemberStatus> {
-    let watch_ids: Vec<String> = if requested_ids.is_empty() {
-        let mut watch_ids: Vec<String> = {
+) -> AwaitedMembersSnapshot {
+    let mut watch_ids: Vec<String> = if requested_ids.is_empty() {
+        let mut current_ids: Vec<String> = {
             let swarms = swarms_by_id.read().await;
             swarms
                 .get(swarm_id)
@@ -32,30 +41,44 @@ pub(super) async fn awaited_member_statuses(
                 })
                 .unwrap_or_default()
         };
-        watch_ids.sort();
-        watch_ids
+        current_ids.extend(observed_ids.iter().cloned());
+        current_ids
     } else {
         requested_ids.to_vec()
     };
+    watch_ids.sort();
+    watch_ids.dedup();
 
     let members = swarm_members.read().await;
-    watch_ids
+    let previously_observed: HashSet<&str> = observed_ids.iter().map(String::as_str).collect();
+    let mut next_observed_ids = observed_ids.to_vec();
+    let mut present_ids = HashSet::new();
+    let member_statuses = watch_ids
         .iter()
         .map(|session_id| {
             let (name, status, completion_report) = members
                 .get(session_id)
                 .map(|member| {
+                    next_observed_ids.push(session_id.clone());
+                    present_ids.insert(session_id.clone());
                     (
                         member.friendly_name.clone(),
                         member.status.clone(),
                         member.latest_completion_report.clone(),
                     )
                 })
-                .unwrap_or((None, "unknown".to_string(), None));
-            let done = target_status.contains(&status)
-                || (status == "unknown"
-                    && (target_status.contains(&"stopped".to_string())
-                        || target_status.contains(&"completed".to_string())));
+                .unwrap_or_else(|| {
+                    if previously_observed.contains(session_id.as_str()) {
+                        (
+                            None,
+                            "failed".to_string(),
+                            Some(VANISHED_MEMBER_REPORT.to_string()),
+                        )
+                    } else {
+                        (None, "unknown".to_string(), None)
+                    }
+                });
+            let done = target_status.contains(&status);
             AwaitedMemberStatus {
                 session_id: session_id.clone(),
                 friendly_name: name,
@@ -64,7 +87,14 @@ pub(super) async fn awaited_member_statuses(
                 completion_report,
             }
         })
-        .collect()
+        .collect();
+    next_observed_ids.sort();
+    next_observed_ids.dedup();
+    AwaitedMembersSnapshot {
+        members: member_statuses,
+        observed_ids: next_observed_ids,
+        present_ids,
+    }
 }
 
 fn short_member_name(member: &AwaitedMemberStatus) -> String {
@@ -84,12 +114,30 @@ pub(super) fn timeout_summary(member_statuses: &[AwaitedMemberStatus]) -> String
 }
 
 fn completion_summary(member_statuses: &[AwaitedMemberStatus]) -> String {
-    let done_names: Vec<String> = member_statuses.iter().map(short_member_name).collect();
-    format!(
-        "All {} members are done: {}",
-        done_names.len(),
-        done_names.join(", ")
-    )
+    let reached: Vec<String> = member_statuses
+        .iter()
+        .map(|member| format!("{} ({})", short_member_name(member), member.status))
+        .collect();
+    let mut summary = format!(
+        "All {} watched members reached a target status: {}",
+        reached.len(),
+        reached.join(", ")
+    );
+    summary.push_str(&failure_attention(member_statuses.iter()));
+    summary
+}
+
+fn failure_attention<'a>(members: impl IntoIterator<Item = &'a AwaitedMemberStatus>) -> String {
+    let failed: Vec<String> = members
+        .into_iter()
+        .filter(|member| matches!(member.status.as_str(), "failed" | "crashed"))
+        .map(short_member_name)
+        .collect();
+    if failed.is_empty() {
+        String::new()
+    } else {
+        format!(" Failures require attention: {}.", failed.join(", "))
+    }
 }
 
 pub(super) fn completion_mode(mode: Option<&str>) -> &str {
@@ -109,17 +157,22 @@ pub(super) fn mode_satisfied(member_statuses: &[AwaitedMemberStatus], mode: Opti
 pub(super) fn mode_summary(member_statuses: &[AwaitedMemberStatus], mode: Option<&str>) -> String {
     match completion_mode(mode) {
         "any" => {
-            let matching: Vec<String> = member_statuses
+            let matching: Vec<&AwaitedMemberStatus> = member_statuses
                 .iter()
                 .filter(|member| member.done)
-                .map(short_member_name)
                 .collect();
-            format!(
-                "Matched {} member{}: {}",
+            let labels: Vec<String> = matching
+                .iter()
+                .map(|member| format!("{} ({})", short_member_name(member), member.status))
+                .collect();
+            let mut summary = format!(
+                "Matched {} member{} at a target status: {}",
                 matching.len(),
                 if matching.len() == 1 { "" } else { "s" },
-                matching.join(", ")
-            )
+                labels.join(", ")
+            );
+            summary.push_str(&failure_attention(matching));
+            summary
         }
         _ => completion_summary(member_statuses),
     }
@@ -175,6 +228,20 @@ fn refresh_pending_state(state: &PersistedAwaitMembersState) -> Option<Persisted
     load_state(&state.key).filter(PersistedAwaitMembersState::is_pending)
 }
 
+fn persist_observed_ids(state: &mut PersistedAwaitMembersState, observed_ids: Vec<String>) {
+    if state.observed_ids == observed_ids {
+        return;
+    }
+
+    // Duplicate requests may update delivery preferences while the watcher is
+    // active. Merge into the latest durable copy instead of overwriting those
+    // preferences with the snapshot captured when this task was spawned.
+    let mut latest = refresh_pending_state(state).unwrap_or_else(|| state.clone());
+    latest.observed_ids = observed_ids;
+    save_state(&latest);
+    *state = latest;
+}
+
 /// Persist the terminal result, reply to any blocking socket waiters, and, when
 /// the await was started in background mode, publish a `SwarmAwaitCompleted`
 /// bus event so the server's bus monitor can wake/notify the requesting agent
@@ -207,7 +274,7 @@ async fn finalize_await(
 }
 
 pub(super) async fn spawn_or_resume_await_members(
-    state: PersistedAwaitMembersState,
+    mut state: PersistedAwaitMembersState,
     req_session_id: String,
     swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: Arc<RwLock<HashMap<String, HashSet<String>>>>,
@@ -225,15 +292,18 @@ pub(super) async fn spawn_or_resume_await_members(
         let deadline = deadline_to_instant(state.deadline_unix_ms);
 
         loop {
-            let member_statuses = awaited_member_statuses(
+            let snapshot = awaited_member_statuses(
                 &req_session_id,
                 &swarm_id,
                 &requested_ids,
+                &state.observed_ids,
                 &target_status,
                 &swarm_members,
                 &swarms_by_id,
             )
             .await;
+            persist_observed_ids(&mut state, snapshot.observed_ids);
+            let member_statuses = snapshot.members;
 
             if member_statuses.is_empty() {
                 let summary = "No other members in swarm to wait for.".to_string();
@@ -343,22 +413,37 @@ pub(super) async fn handle_comm_await_members(
         );
         let mut persisted = load_state(&key);
 
-        let initial_statuses = awaited_member_statuses(
+        let prior_observed_ids: &[String] = match persisted.as_ref() {
+            Some(state) => state.observed_ids.as_slice(),
+            None => &[],
+        };
+        let initial_snapshot = awaited_member_statuses(
             &req_session_id,
             &swarm_id,
             &requested_ids,
+            prior_observed_ids,
             &target_status,
             ctx.swarm_members,
             ctx.swarms_by_id,
         )
         .await;
+        let AwaitedMembersSnapshot {
+            members: initial_statuses,
+            observed_ids: initial_observed_ids,
+            present_ids: initial_present_ids,
+        } = initial_snapshot;
 
         if let Some(final_response) = persisted
             .as_ref()
             .and_then(|state| state.final_response.clone())
         {
+            let current_statuses: Vec<AwaitedMemberStatus> = initial_statuses
+                .iter()
+                .filter(|member| initial_present_ids.contains(&member.session_id))
+                .cloned()
+                .collect();
             let current_still_satisfies =
-                initial_statuses.is_empty() || mode_satisfied(&initial_statuses, mode.as_deref());
+                current_statuses.is_empty() || mode_satisfied(&current_statuses, mode.as_deref());
             if current_still_satisfies {
                 let _ = ctx
                     .client_event_tx
@@ -416,6 +501,7 @@ pub(super) async fn handle_comm_await_members(
                 &req_session_id,
                 &swarm_id,
                 &requested_ids,
+                &initial_observed_ids,
                 &target_status,
                 mode.as_deref(),
                 requested_deadline,
@@ -429,10 +515,15 @@ pub(super) async fn handle_comm_await_members(
         // reload, or a duplicate request), let the latest call's delivery prefs
         // win so the watcher and tool response stay in sync. The deadline is
         // intentionally preserved from the original request.
-        if state.background != background || state.notify != notify || state.wake != wake {
+        if state.background != background
+            || state.notify != notify
+            || state.wake != wake
+            || state.observed_ids != initial_observed_ids
+        {
             state.background = background;
             state.notify = notify;
             state.wake = wake;
+            state.observed_ids = initial_observed_ids;
             save_state(&state);
         }
 
@@ -622,20 +713,23 @@ pub(super) async fn resume_background_awaits(
 
     let mut resumed = 0usize;
     let mut expired = 0usize;
-    for state in pending {
+    for mut state in pending {
         // Deadline passed while the server was down: the wait can never
         // resolve, so finalize it as a timeout now so the promised
         // notify/wake still fires instead of the await silently vanishing.
         if state.deadline_unix_ms <= now_ms {
-            let member_statuses = awaited_member_statuses(
+            let snapshot = awaited_member_statuses(
                 &state.session_id,
                 &state.swarm_id,
                 &state.requested_ids,
+                &state.observed_ids,
                 &state.target_status,
                 swarm_members,
                 swarms_by_id,
             )
             .await;
+            persist_observed_ids(&mut state, snapshot.observed_ids);
+            let member_statuses = snapshot.members;
             let (completed, summary) = if member_statuses.is_empty() {
                 (true, "No other members in swarm to wait for.".to_string())
             } else if mode_satisfied(&member_statuses, state.mode.as_deref()) {

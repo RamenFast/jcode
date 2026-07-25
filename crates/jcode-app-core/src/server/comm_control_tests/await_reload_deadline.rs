@@ -22,6 +22,7 @@ async fn await_members_reuses_persisted_deadline_after_reload_retry() {
             swarm_id: swarm_id.to_string(),
             target_status: vec!["completed".to_string()],
             requested_ids: vec![],
+            observed_ids: vec![peer.to_string()],
             mode: None,
             created_at_unix_ms: now_ms,
             deadline_unix_ms: now_ms + 150,

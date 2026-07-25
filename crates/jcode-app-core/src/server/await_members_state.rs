@@ -27,6 +27,12 @@ pub struct PersistedAwaitMembersState {
     pub swarm_id: String,
     pub target_status: Vec<String>,
     pub requested_ids: Vec<String>,
+    /// Every member this wait has observed, including members discovered after
+    /// an all-swarm wait began. Keeping this set durable prevents a worker that
+    /// vanishes from both live membership maps from disappearing from the wait
+    /// result or turning the wait into a vacuous success after reload.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub observed_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
     pub created_at_unix_ms: u64,
@@ -178,6 +184,7 @@ pub(super) fn ensure_pending_state(
     session_id: &str,
     swarm_id: &str,
     requested_ids: &[String],
+    observed_ids: &[String],
     target_status: &[String],
     mode: Option<&str>,
     deadline_unix_ms: u64,
@@ -195,6 +202,7 @@ pub(super) fn ensure_pending_state(
         swarm_id: swarm_id.to_string(),
         target_status: target_status.to_vec(),
         requested_ids: requested_ids.to_vec(),
+        observed_ids: observed_ids.to_vec(),
         mode: mode.map(str::to_string),
         created_at_unix_ms: now_unix_ms(),
         deadline_unix_ms,

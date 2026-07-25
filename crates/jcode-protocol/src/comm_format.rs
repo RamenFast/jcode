@@ -580,7 +580,12 @@ pub fn format_comm_awaited_members_with_reports(
     // An any-mode wait can complete while some members are still pending, so
     // only claim "All members done" when every member actually matched.
     let all_done = members.iter().all(|member| member.done);
-    let mut output = if completed && all_done {
+    let has_failures = members
+        .iter()
+        .any(|member| matches!(member.status.as_str(), "failed" | "crashed"));
+    let mut output = if completed && has_failures {
+        format!("Await resolved with failures. {}\n", summary)
+    } else if completed && all_done {
         format!("All members done. {}\n", summary)
     } else if completed {
         format!("Await satisfied. {}\n", summary)

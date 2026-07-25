@@ -23,6 +23,7 @@ async fn resume_background_awaits_finalizes_states_expired_while_down() {
             swarm_id: swarm_id.to_string(),
             target_status: vec!["completed".to_string()],
             requested_ids: vec![],
+            observed_ids: vec![peer.to_string()],
             mode: None,
             created_at_unix_ms: now_ms.saturating_sub(120_000),
             deadline_unix_ms: now_ms.saturating_sub(60_000),
