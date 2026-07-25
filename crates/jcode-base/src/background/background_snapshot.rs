@@ -3,6 +3,10 @@ use super::*;
 impl BackgroundTaskManager {
     /// Best-effort synchronous snapshot of currently running tasks.
     /// This avoids async calls in render paths.
+    #[expect(
+        clippy::manual_ok_err,
+        reason = "explicit best-effort parse handling is required by the swallowed-error ratchet"
+    )]
     pub fn running_snapshot(&self) -> (usize, Vec<String>, Option<RunningBackgroundProgress>) {
         let Ok(tasks) = self.tasks.try_read() else {
             return (0, Vec::new(), None);
