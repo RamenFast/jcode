@@ -4631,6 +4631,7 @@ dependencies = [
  "crossterm",
  "jcode-base",
  "jcode-core",
+ "jcode-logging",
  "jcode-tui-style",
  "ratatui",
  "serde_json",

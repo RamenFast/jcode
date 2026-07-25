@@ -30,6 +30,7 @@ mod loading;
 mod memory;
 mod navigation;
 mod render;
+mod text;
 
 #[cfg(test)]
 use loading::collect_recent_session_stems;
@@ -38,6 +39,7 @@ pub use loading::{
     invalidate_session_list_cache, load_cached_sessions_grouped, load_servers, load_sessions,
     load_sessions_grouped,
 };
+use text::safe_truncate;
 
 const SEARCH_CONTENT_BUDGET_BYTES: usize = 12_000;
 const DEFAULT_SESSION_SCAN_LIMIT: usize = 100;
@@ -70,18 +72,6 @@ pub enum OverlayAction {
     Continue,
     Close,
     Selected(PickerResult),
-}
-
-/// Safely truncate a string at a character boundary
-fn safe_truncate(s: &str, max_chars: usize) -> &str {
-    if s.chars().count() <= max_chars {
-        return s;
-    }
-
-    s.char_indices()
-        .nth(max_chars)
-        .map(|(idx, _)| &s[..idx])
-        .unwrap_or(s)
 }
 
 /// Normalize a working directory string for equality comparison: trim trailing
@@ -2396,7 +2386,11 @@ impl SessionPicker {
         if keyboard_enhanced {
             super::disable_keyboard_enhancement();
         }
-        ratatui::restore();
+        if let Err(error) = ratatui::try_restore() {
+            jcode_logging::warn(&format!(
+                "Failed to restore session picker terminal: {error}"
+            ));
+        }
         super::mermaid::clear_image_state();
 
         result

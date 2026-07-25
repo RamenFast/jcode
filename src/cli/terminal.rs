@@ -174,6 +174,13 @@ pub fn get_current_session() -> Option<String> {
 pub fn install_panic_hook() {
     let default_hook = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
+        let payload = panic_payload_to_string(info.payload());
+        if panic_indicates_dead_stdio(&payload) {
+            crate::logging::warn(&format!(
+                "Panic hook: stdio write failure treated as a dead-terminal exit, not a session crash: {payload}"
+            ));
+            return;
+        }
         default_hook(info);
 
         if let Some(session_id) = get_current_session() {
@@ -183,12 +190,32 @@ pub fn install_panic_hook() {
                 telemetry::record_crash(&provider, &model, telemetry::SessionEndReason::Panic);
             }
 
-            if let Ok(mut session) = session::Session::load(&session_id) {
-                session.mark_crashed(Some(format!("Panic: {}", info)));
-                let _ = session.save();
-            }
+            mark_session_crashed_if_active(&session_id, format!("Panic: {info}"));
         }
     }));
+}
+
+fn panic_indicates_dead_stdio(payload: &str) -> bool {
+    payload.trim_start().starts_with("failed printing to ")
+}
+
+fn mark_session_crashed_if_active(session_id: &str, message: String) -> bool {
+    let Ok(mut session) = session::Session::load(session_id) else {
+        return false;
+    };
+    if !matches!(session.status, session::SessionStatus::Active) {
+        return false;
+    }
+    session.mark_crashed(Some(message));
+    match session.save() {
+        Ok(()) => true,
+        Err(error) => {
+            crate::logging::warn(&format!(
+                "Failed to persist crashed status for session {session_id}: {error}"
+            ));
+            false
+        }
+    }
 }
 
 pub fn mark_current_session_crashed(message: String) {
@@ -196,12 +223,7 @@ pub fn mark_current_session_crashed(message: String) {
         if let Some((provider, model)) = telemetry::current_provider_model() {
             telemetry::record_crash(&provider, &model, telemetry::SessionEndReason::Signal);
         }
-        if let Ok(mut session) = session::Session::load(&session_id)
-            && matches!(session.status, session::SessionStatus::Active)
-        {
-            session.mark_crashed(Some(message));
-            let _ = session.save();
-        }
+        mark_session_crashed_if_active(&session_id, message);
     }
 }
 
@@ -409,7 +431,13 @@ fn cleanup_tui_runtime(state: &TuiRuntimeState, restore_terminal: bool) {
         if state.keyboard_enhanced {
             tui::disable_keyboard_enhancement();
         }
-        ratatui::restore();
+        restore_terminal_after_tui();
+    }
+}
+
+fn restore_terminal_after_tui() {
+    if let Err(error) = ratatui::try_restore() {
+        crate::logging::warn(&format!("Failed to restore terminal: {error}"));
     }
 }
 
@@ -732,5 +760,77 @@ mod tests {
         let error = write_session_resume_hint(ClosedWriter, "session_closed_pipe")
             .expect_err("closed stderr should be reported as an I/O error");
         assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[test]
+    fn dead_stdio_panics_do_not_mark_the_session_crashed() {
+        for payload in [
+            "failed printing to stderr: Input/output error (os error 5)",
+            "failed printing to stdout: Broken pipe (os error 32)",
+            "  failed printing to stderr: terminal closed",
+        ] {
+            assert!(
+                panic_indicates_dead_stdio(payload),
+                "dead stdio payload should be classified: {payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn real_panics_still_mark_the_session_crashed() {
+        for payload in [
+            "index out of bounds: the len is 0 but the index is 1",
+            "called `Option::unwrap()` on a `None` value",
+            "application failed printing to its own log",
+            "explicit panic",
+        ] {
+            assert!(
+                !panic_indicates_dead_stdio(payload),
+                "real panic must not be hidden: {payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn crash_marking_is_gated_on_active_status() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let previous_home = std::env::var_os("JCODE_HOME");
+        crate::env::set_var("JCODE_HOME", temp.path());
+
+        let active_id = "session_terminal_active_gate";
+        let mut active = session::Session::create_with_id(active_id.to_string(), None, None);
+        active.save().expect("save active session");
+        assert!(mark_session_crashed_if_active(
+            active_id,
+            "Panic: real failure".to_string()
+        ));
+        assert!(matches!(
+            session::Session::load(active_id)
+                .expect("load active session")
+                .status,
+            session::SessionStatus::Crashed { .. }
+        ));
+
+        let closed_id = "session_terminal_closed_gate";
+        let mut closed = session::Session::create_with_id(closed_id.to_string(), None, None);
+        closed.mark_closed();
+        closed.save().expect("save closed session");
+        assert!(!mark_session_crashed_if_active(
+            closed_id,
+            "Panic: should never replace closed status".to_string()
+        ));
+        assert!(matches!(
+            session::Session::load(closed_id)
+                .expect("load closed session")
+                .status,
+            session::SessionStatus::Closed
+        ));
+
+        if let Some(home) = previous_home {
+            crate::env::set_var("JCODE_HOME", home);
+        } else {
+            crate::env::remove_var("JCODE_HOME");
+        }
     }
 }

@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 pub const OAUTH_BILLING_HEADER: &str = "cc_version=2.1.123; cc_entrypoint=sdk-cli; cch=33f85;";
 
 const CLAUDE_CODE_IDENTITY: &str = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
+const PREFILL_GUARD_CONTINUATION_TEXT: &str = "Continue.";
 
 pub fn format_messages(messages: &[Message], is_oauth: bool) -> Vec<ApiMessage> {
     use std::collections::HashSet;
@@ -102,6 +103,27 @@ pub fn format_messages(messages: &[Message], is_oauth: bool) -> Vec<ApiMessage> 
             "[anthropic] Merged {} consecutive same-role messages",
             pre_merge_count - merged.len()
         ));
+    }
+
+    // Jcode never intentionally uses Anthropic assistant-prefill requests. A
+    // trailing assistant turn means an upstream recovery path failed to append
+    // a user continuation, which models such as claude-fable-5 reject with a
+    // non-retriable 400. Repair the provider request at its final boundary so
+    // every caller preserves resumability even if its own guard regresses.
+    if merged
+        .last()
+        .is_some_and(|message| message.role == "assistant")
+    {
+        jcode_logging::warn(
+            "[anthropic] Conversation ended with an assistant message; appending a continuation user turn to avoid an assistant-prefill rejection",
+        );
+        merged.push(ApiMessage {
+            role: "user".to_string(),
+            content: vec![ApiContentBlock::Text {
+                text: PREFILL_GUARD_CONTINUATION_TEXT.to_string(),
+                cache_control: None,
+            }],
+        });
     }
 
     // Validate: check each assistant message with tool_use has matching tool_result in next user message
@@ -854,6 +876,42 @@ mod cache_prefix_invariant_tests {
             text_msg(Role::Assistant, "A2"),
             text_msg(Role::User, "Q3"),
         ]
+    }
+
+    #[test]
+    fn trailing_assistant_message_is_repaired_into_a_user_turn() {
+        let messages = vec![
+            text_msg(Role::User, "Start the refactor"),
+            text_msg(Role::Assistant, "I am partway through it"),
+        ];
+
+        let formatted = format_messages(&messages, false);
+
+        assert_eq!(formatted.len(), 3);
+        assert_eq!(formatted[1].role, "assistant");
+        assert_eq!(formatted[2].role, "user");
+        assert!(matches!(
+            formatted[2].content.as_slice(),
+            [ApiContentBlock::Text { text, .. }] if text == PREFILL_GUARD_CONTINUATION_TEXT
+        ));
+    }
+
+    #[test]
+    fn conversation_ending_with_user_is_left_untouched() {
+        let messages = vec![
+            text_msg(Role::User, "Question"),
+            text_msg(Role::Assistant, "Answer"),
+            text_msg(Role::User, "Real continuation request"),
+        ];
+
+        let formatted = format_messages(&messages, false);
+
+        assert_eq!(formatted.len(), 3);
+        assert_eq!(formatted[2].role, "user");
+        assert!(matches!(
+            formatted[2].content.as_slice(),
+            [ApiContentBlock::Text { text, .. }] if text == "Real continuation request"
+        ));
     }
 
     /// Returns the indices of ApiMessages that carry a cache_control breakpoint,

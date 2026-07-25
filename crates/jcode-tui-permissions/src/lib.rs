@@ -583,7 +583,9 @@ impl PermissionsApp {
             }
         };
 
-        ratatui::restore();
+        if let Err(error) = ratatui::try_restore() {
+            jcode_logging::warn(&format!("Failed to restore permissions terminal: {error}"));
+        }
         result
     }
 }

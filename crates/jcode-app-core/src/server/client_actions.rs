@@ -990,8 +990,8 @@ pub(super) async fn handle_resume_all_sessions(
         super::live_turn::spawn_tracked_live_turn(
             &session_id,
             Arc::clone(&agent),
-            String::new(),
-            Some(reminder),
+            reminder,
+            None,
             Some("resuming interrupted session".to_string()),
             super::live_turn::LiveTurnSwarmContext::new(
                 swarm_members,

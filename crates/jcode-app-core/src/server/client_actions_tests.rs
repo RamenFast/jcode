@@ -41,11 +41,21 @@ struct MockProvider;
 #[derive(Clone, Default)]
 struct StreamingMockProvider {
     responses: Arc<StdMutex<VecDeque<Vec<StreamEvent>>>>,
+    requests: Arc<StdMutex<Vec<Vec<Message>>>>,
 }
 
 impl StreamingMockProvider {
     fn queue_response(&self, events: Vec<StreamEvent>) {
         self.responses.lock().unwrap().push_back(events);
+    }
+
+    fn last_request(&self) -> Vec<Message> {
+        self.requests
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("streaming provider should have received a request")
     }
 }
 
@@ -76,11 +86,12 @@ impl Provider for MockProvider {
 impl Provider for StreamingMockProvider {
     async fn complete(
         &self,
-        _messages: &[Message],
+        messages: &[Message],
         _tools: &[ToolDefinition],
         _system: &str,
         _resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
+        self.requests.lock().unwrap().push(messages.to_vec());
         let events = self
             .responses
             .lock()
@@ -685,6 +696,24 @@ async fn resume_all_continues_interrupted_idle_live_session() {
     .await
     .expect("interrupted session should resume promptly");
     assert!(streamed.contains("Continuing where I left off."));
+
+    let request = provider.last_request();
+    let final_message = request
+        .last()
+        .expect("resume request should contain messages");
+    assert_eq!(
+        final_message.role,
+        Role::User,
+        "reload continuation must be a real user turn, not only a system reminder"
+    );
+    assert!(
+        final_message.content.iter().any(|block| matches!(
+            block,
+            ContentBlock::Text { text, .. }
+                if text.contains("Continue exactly where you left off")
+        )),
+        "final user turn should contain the reload continuation directive: {final_message:?}"
+    );
 
     // The requesting client receives a summary describing one resumed session.
     let result = timeout(Duration::from_secs(2), async {
