@@ -1417,7 +1417,8 @@ impl Server {
         // Spawn the background ambient/schedule loop.
         if let Some(ref runner) = self.ambient_runner {
             let ambient_handle = runner.clone();
-            let ambient_provider = Arc::clone(&self.provider);
+            let ambient_provider =
+                ambient_provider_with_config(&self.provider, &crate::config::config().ambient);
             crate::logging::info("Starting ambient/schedule background loop");
             tokio::spawn(async move {
                 ambient_handle.run_loop(ambient_provider).await;
@@ -2367,6 +2368,41 @@ impl Server {
             let _ = listener_runtime.spawn_gateway_accept_loop(client_rx).await;
         }
     }
+}
+
+fn ambient_provider_with_config(
+    provider_template: &Arc<dyn Provider>,
+    ambient_config: &crate::config::AmbientConfig,
+) -> Arc<dyn Provider> {
+    let provider = provider_template.fork_for_new_session();
+
+    if let Some(provider_override) = ambient_config
+        .provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty())
+        && let Err(error) = provider.switch_active_provider_to(provider_override)
+    {
+        crate::logging::warn(&format!(
+            "Ambient provider override '{}' could not be applied: {}",
+            provider_override, error
+        ));
+    }
+
+    if let Some(model_override) = ambient_config
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        && let Err(error) = provider.set_model(model_override)
+    {
+        crate::logging::warn(&format!(
+            "Ambient model override '{}' could not be applied: {}",
+            model_override, error
+        ));
+    }
+
+    provider
 }
 
 pub use self::client_api::Client;

@@ -606,15 +606,30 @@ pub(super) fn preferred_one_shot_review_override() -> Option<(String, String)> {
 }
 
 fn current_review_model_override() -> (Option<String>, Option<String>) {
-    preferred_one_shot_review_override()
-        .map(|(model, provider_key)| (Some(model), Some(provider_key)))
-        .unwrap_or_else(|| (current_autoreview_model_override(), None))
+    configured_or_preferred_one_shot_override(
+        current_autoreview_model_override(),
+        preferred_one_shot_review_override(),
+    )
 }
 
 fn current_judge_model_override() -> (Option<String>, Option<String>) {
-    preferred_one_shot_review_override()
+    configured_or_preferred_one_shot_override(
+        current_autojudge_model_override(),
+        preferred_one_shot_review_override(),
+    )
+}
+
+fn configured_or_preferred_one_shot_override(
+    configured_model: Option<String>,
+    preferred_override: Option<(String, String)>,
+) -> (Option<String>, Option<String>) {
+    if let Some(model) = configured_model {
+        return (Some(model), None);
+    }
+
+    preferred_override
         .map(|(model, provider_key)| (Some(model), Some(provider_key)))
-        .unwrap_or_else(|| (current_autojudge_model_override(), None))
+        .unwrap_or((None, None))
 }
 
 fn clone_session_for_review(
@@ -1086,4 +1101,31 @@ pub(super) enum RefactorCommand {
     Resume,
     Status,
     Stop,
+}
+
+#[cfg(test)]
+mod model_override_tests {
+    use super::configured_or_preferred_one_shot_override;
+
+    #[test]
+    fn configured_model_wins_over_oauth_review_fallback() {
+        assert_eq!(
+            configured_or_preferred_one_shot_override(
+                Some("openai-oauth:gpt-5.6-sol".to_string()),
+                Some(("gpt-5.5".to_string(), "openai".to_string())),
+            ),
+            (Some("openai-oauth:gpt-5.6-sol".to_string()), None)
+        );
+    }
+
+    #[test]
+    fn oauth_review_fallback_is_kept_when_no_model_is_configured() {
+        assert_eq!(
+            configured_or_preferred_one_shot_override(
+                None,
+                Some(("gpt-5.5".to_string(), "openai".to_string())),
+            ),
+            (Some("gpt-5.5".to_string()), Some("openai".to_string()))
+        );
+    }
 }
