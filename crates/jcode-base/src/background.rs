@@ -1405,8 +1405,7 @@ impl BackgroundTaskManager {
         // timestamp prefix is truncated and wraps, so id order is not time
         // order). RFC3339 strings compare chronologically.
         rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.task_id.cmp(&a.1.task_id)));
-        let rows: Vec<RunningBackgroundProgress> =
-            rows.into_iter().map(|(_, row)| row).collect();
+        let rows: Vec<RunningBackgroundProgress> = rows.into_iter().map(|(_, row)| row).collect();
         let latest = rows.iter().find(|row| row.detail.is_some()).cloned();
 
         (
