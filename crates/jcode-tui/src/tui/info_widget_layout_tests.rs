@@ -170,7 +170,7 @@ fn assert_placements_sane(label: &str, area: Rect, placements: &[WidgetPlacement
     }
 }
 
-fn margins_for(width: u16, rows: usize, centered: bool, content_anchored: bool) -> Margins {
+fn margins_for(width: u16, rows: usize, centered: bool) -> Margins {
     Margins {
         right_widths: vec![width; rows],
         left_widths: if centered {
@@ -180,7 +180,6 @@ fn margins_for(width: u16, rows: usize, centered: bool, content_anchored: bool) 
         },
         centered,
         scroll_top: 10,
-        content_anchored,
         ..Default::default()
     }
 }
@@ -198,13 +197,8 @@ fn degenerate_sizes_with_full_contention_never_panic_or_escape() {
     // left + right widths never exceed the area width; the synthetic margins
     // here respect that invariant (40 + 40 <= 100).
     let healthy_area = Rect::new(2, 1, 100, 12);
-    let healthy = calculate_placements_anchored(
-        healthy_area,
-        &margins_for(40, 12, false, false),
-        &data,
-        true,
-        &[],
-    );
+    let healthy =
+        calculate_placements_anchored(healthy_area, &margins_for(40, 12, false), &data, true, &[]);
     assert!(
         !healthy.visible.is_empty(),
         "healthy frame should place at least one widget"
@@ -215,32 +209,23 @@ fn degenerate_sizes_with_full_contention_never_panic_or_escape() {
     for &margin_w in &widths {
         for &h in &heights {
             for centered in [false, true] {
-                for content_anchored in [false, true] {
-                    let label = format!(
-                        "margin_w={margin_w} h={h} centered={centered} anchored={content_anchored}"
-                    );
-                    let area = Rect::new(2, 1, 100, h);
-                    let margins = margins_for(margin_w, h as usize, centered, content_anchored);
+                let label = format!("margin_w={margin_w} h={h} centered={centered}");
+                let area = Rect::new(2, 1, 100, h);
+                let margins = margins_for(margin_w, h as usize, centered);
 
-                    let fresh = calculate_placements_anchored(area, &margins, &data, true, &[]);
-                    assert_placements_sane(&format!("{label} (fresh)"), area, &fresh.visible);
+                let fresh = calculate_placements_anchored(area, &margins, &data, true, &[]);
+                assert_placements_sane(&format!("{label} (fresh)"), area, &fresh.visible);
 
-                    // Same frame with the fresh anchors fed back (steady state).
-                    let steady =
-                        calculate_placements_anchored(area, &margins, &data, true, &fresh.anchors);
-                    assert_placements_sane(&format!("{label} (steady)"), area, &steady.visible);
+                // Same frame with the fresh anchors fed back (steady state).
+                let steady =
+                    calculate_placements_anchored(area, &margins, &data, true, &fresh.anchors);
+                assert_placements_sane(&format!("{label} (steady)"), area, &steady.visible);
 
-                    // Anchors recorded against a bigger frame must not let a
-                    // widget escape a now-smaller area.
-                    let shrunk = calculate_placements_anchored(
-                        area,
-                        &margins,
-                        &data,
-                        true,
-                        &healthy.anchors,
-                    );
-                    assert_placements_sane(&format!("{label} (shrunk)"), area, &shrunk.visible);
-                }
+                // Anchors recorded against a bigger frame must not let a
+                // widget escape a now-smaller area.
+                let shrunk =
+                    calculate_placements_anchored(area, &margins, &data, true, &healthy.anchors);
+                assert_placements_sane(&format!("{label} (shrunk)"), area, &shrunk.visible);
             }
         }
     }
@@ -268,8 +253,7 @@ fn todo_and_background_contention_prioritizes_todos_without_overlap() {
     // One pocket of 6 rows: Overview (min 8 + borders) can't fit; todos
     // (height 5) wins the pocket and background is dropped.
     let area = Rect::new(0, 0, 80, 6);
-    let outcome =
-        calculate_placements_anchored(area, &margins_for(40, 6, false, false), &data, true, &[]);
+    let outcome = calculate_placements_anchored(area, &margins_for(40, 6, false), &data, true, &[]);
     assert_placements_sane("short pocket", area, &outcome.visible);
     let kinds: Vec<WidgetKind> = outcome.visible.iter().map(|p| p.kind).collect();
     assert_eq!(
@@ -289,7 +273,6 @@ fn todo_and_background_contention_prioritizes_todos_without_overlap() {
         left_widths: Vec::new(),
         centered: false,
         scroll_top: 10,
-        content_anchored: false,
         ..Default::default()
     };
     let outcome = calculate_placements_anchored(area, &margins, &data, true, &[]);
@@ -308,7 +291,7 @@ fn overview_suppresses_mergeable_widgets_under_contention() {
     let data = contended_data();
     let area = Rect::new(0, 0, 100, 40);
     let outcome =
-        calculate_placements_anchored(area, &margins_for(40, 40, false, false), &data, true, &[]);
+        calculate_placements_anchored(area, &margins_for(40, 40, false), &data, true, &[]);
     assert_placements_sane("overview contention", area, &outcome.visible);
     let kinds: Vec<WidgetKind> = outcome.visible.iter().map(|p| p.kind).collect();
     assert!(
@@ -362,7 +345,7 @@ fn swarm_status_dock_requires_managed_members() {
 
     let area = Rect::new(0, 0, 100, 40);
     let outcome =
-        calculate_placements_anchored(area, &margins_for(40, 40, true, false), &without, true, &[]);
+        calculate_placements_anchored(area, &margins_for(40, 40, true), &without, true, &[]);
     assert!(
         outcome
             .visible
@@ -379,7 +362,7 @@ fn swarm_status_dock_requires_managed_members() {
 fn margin_profile_longer_than_area_cannot_place_below_viewport() {
     let data = contended_data();
     let area = Rect::new(0, 0, 100, 8);
-    let margins = margins_for(40, 50, false, false);
+    let margins = margins_for(40, 50, false);
 
     let fresh = calculate_placements_anchored(area, &margins, &data, true, &[]);
     assert_placements_sane("long profile (fresh)", area, &fresh.visible);
@@ -388,13 +371,8 @@ fn margin_profile_longer_than_area_cannot_place_below_viewport() {
     // with the oversized profile: Phase 1 must not keep a placement whose rows
     // exist in the profile but not in the area.
     let tall_area = Rect::new(0, 0, 100, 40);
-    let tall = calculate_placements_anchored(
-        tall_area,
-        &margins_for(40, 40, false, false),
-        &data,
-        true,
-        &[],
-    );
+    let tall =
+        calculate_placements_anchored(tall_area, &margins_for(40, 40, false), &data, true, &[]);
     let shrunk = calculate_placements_anchored(area, &margins, &data, true, &tall.anchors);
     assert_placements_sane("long profile (stale anchors)", area, &shrunk.visible);
 }
@@ -407,8 +385,7 @@ fn stale_anchor_above_shifted_area_is_rehomed_not_drawn_out_of_bounds() {
     let data = contended_data();
 
     let area0 = Rect::new(0, 0, 80, 20);
-    let first =
-        calculate_placements_anchored(area0, &margins_for(40, 20, false, false), &data, true, &[]);
+    let first = calculate_placements_anchored(area0, &margins_for(40, 20, false), &data, true, &[]);
     assert!(!first.visible.is_empty());
     assert!(
         first.visible.iter().any(|p| p.rect.y < 5),
@@ -419,7 +396,7 @@ fn stale_anchor_above_shifted_area_is_rehomed_not_drawn_out_of_bounds() {
     let area1 = Rect::new(0, 5, 80, 15);
     let second = calculate_placements_anchored(
         area1,
-        &margins_for(40, 15, false, false),
+        &margins_for(40, 15, false),
         &data,
         true,
         &first.anchors,

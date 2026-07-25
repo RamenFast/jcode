@@ -106,9 +106,11 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
         "Show/toggle dimmed technical details on tool rows with an intent",
     ),
     RegisteredCommand::public(
-        "/reasoning",
-        "Show/change reasoning display (off/full/current)",
+        "/thinking-display",
+        "Show/hide the model's thinking text (off/full/current)",
     ),
+    RegisteredCommand::hidden("/thinking", "Alias for /thinking-display"),
+    RegisteredCommand::hidden("/reasoning", "Alias for /thinking-display"),
     RegisteredCommand::public("/cancel", "Cancel the current prompt or operation"),
     RegisteredCommand::public("/clear", "Clear conversation history"),
     RegisteredCommand::public("/rewind", "Rewind conversation to previous message"),
@@ -144,8 +146,10 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     ),
     RegisteredCommand::public("/wrapped", "Alias for /productivity"),
     RegisteredCommand::public("/feedback", "Send feedback about jcode"),
+    RegisteredCommand::public("/telemetry", "Show or change what jcode sends"),
     RegisteredCommand::public("/support", "Email support with diagnostics prefilled"),
     RegisteredCommand::public("/subscription", "Show jcode subscription status"),
+    RegisteredCommand::public("/subscribe", "Why and how to subscribe to jcode"),
     RegisteredCommand::public("/config", "Show or edit configuration"),
     RegisteredCommand::public("/log", "Mark the current location in the jcode logs"),
     RegisteredCommand::public(
@@ -291,9 +295,8 @@ impl App {
         candidates: Vec<(String, &'static str)>,
     ) -> Vec<(String, &'static str)> {
         let needle = needle.to_lowercase();
-        // Bucket 1 = literal prefix matches (kept ahead of looser fuzzy hits so
-        // exact typing always wins). Bucket 0 = typo-tolerant fuzzy matches,
-        // ordered by descending fuzzy score.
+        // Bucket 1 = literal prefix matches (exact typing always wins).
+        // Bucket 0 = typo-tolerant fuzzy matches by descending score.
         let mut scored: Vec<(u8, i32, String, &'static str)> = Vec::new();
         for (cmd, help) in candidates {
             let lower = cmd.to_lowercase();
@@ -1259,7 +1262,7 @@ impl App {
     /// the active guided flow phase. Defaults to the starter suggestion cards.
     pub fn onboarding_welcome_kind(&self) -> crate::tui::OnboardingWelcomeKind {
         use crate::tui::OnboardingWelcomeKind;
-        use crate::tui::app::onboarding_flow::OnboardingPhase;
+        use crate::tui::app::onboarding_flow::{OnboardingPhase, SummaryPill, TelemetryLevel};
         match self.onboarding_phase() {
             Some(OnboardingPhase::Login { import }) => {
                 let prompt = import.as_ref().map(|review| {
@@ -1278,6 +1281,17 @@ impl App {
                         cursor: review.cursor,
                         continue_focused: review.continue_focused,
                         choosing: review.choosing,
+                        summary_pill: match review.summary_pill {
+                            SummaryPill::Continue => crate::tui::ImportSummaryPill::Continue,
+                            SummaryPill::ImportLess => crate::tui::ImportSummaryPill::ImportLess,
+                            SummaryPill::Telemetry => crate::tui::ImportSummaryPill::Telemetry,
+                        },
+                        telemetry: review.telemetry.map(|level| match level {
+                            TelemetryLevel::Everything => crate::tui::TelemetryChoice::Everything,
+                            TelemetryLevel::NoContent => crate::tui::TelemetryChoice::NoContent,
+                            TelemetryLevel::Nothing => crate::tui::TelemetryChoice::Nothing,
+                        }),
+                        telemetry_env_forced_off: crate::telemetry::opt_out_forced_by_env(),
                         checked_count: review.checked_count(),
                         seconds_left: review.seconds_remaining(),
                     }
@@ -1545,6 +1559,8 @@ impl App {
                 | "/compact-notifications"
                 | "/show-agentgrep-output"
                 | "/reasoning"
+                | "/thinking"
+                | "/thinking-display"
                 | "/config"
                 | "/save"
                 | "/rename"

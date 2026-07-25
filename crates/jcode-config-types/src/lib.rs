@@ -701,6 +701,10 @@ impl SwarmStripLayout {
 }
 
 /// Terminal window/pane spawning configuration.
+///
+/// Without a `spawn_hook`, Unix clients inside tmux are opened in a right-side
+/// pane by the built-in launcher. `JCODE_TERMINAL` explicitly selects a terminal
+/// emulator instead.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct TerminalConfig {
@@ -976,8 +980,6 @@ impl Default for KeybindingsConfig {
         }
     }
 }
-
-/// How to display file diffs from edit/write tools
 /// Display/UI configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -987,7 +989,6 @@ pub struct NativeScrollbarConfig {
     /// Show a native terminal scrollbar in the side panel (default: true)
     pub side_panel: bool,
 }
-
 impl Default for NativeScrollbarConfig {
     fn default() -> Self {
         Self {
@@ -996,11 +997,9 @@ impl Default for NativeScrollbarConfig {
         }
     }
 }
-
 fn default_true() -> bool {
     true
 }
-
 /// Display/UI configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -1018,9 +1017,11 @@ pub struct DisplayConfig {
     pub mouse_capture: bool,
     /// Enable debug socket for external control (default: false)
     pub debug_socket: bool,
+    /// Render emoji in terminal-facing TUI and CLI output (default: true)
+    pub emoji: bool,
     /// Center all content (default: false)
     pub centered: bool,
-    /// Show thinking/reasoning content by default (default: true)
+    /// Show thinking/reasoning content by default (default: false)
     pub show_thinking: bool,
     /// How to display reasoning/thinking content (off/full/current).
     /// When unset, falls back to `show_thinking` (true => full, false => off).
@@ -1091,7 +1092,6 @@ pub struct DisplayConfig {
     #[serde(default)]
     pub overscroll_status: OverscrollStatusMode,
 }
-
 impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
@@ -1102,9 +1102,10 @@ impl Default for DisplayConfig {
             auto_server_reload: true,
             mouse_capture: true,
             debug_socket: false,
+            emoji: true,
             centered: false,
-            show_thinking: true,
-            reasoning_display: Some(ReasoningDisplayMode::Current),
+            show_thinking: false,
+            reasoning_display: Some(ReasoningDisplayMode::Off),
             diagram_mode: DiagramDisplayMode::default(),
             markdown_spacing: MarkdownSpacingMode::default(),
             latex_rendering: LatexRenderingMode::default(),
@@ -1128,7 +1129,6 @@ impl Default for DisplayConfig {
         }
     }
 }
-
 impl DisplayConfig {
     pub fn apply_legacy_compat(&mut self) {
         if let Some(show) = self.show_diffs.take() {
@@ -1311,9 +1311,9 @@ pub struct ProviderConfig {
     /// ("myprofile"). The active model's routes always stay visible.
     pub model_picker_providers: Option<Vec<String>>,
     /// Max seconds to wait for streaming data before timing out a request with
-    /// no data received. Raise this for slow reasoning models (e.g. DeepSeek)
-    /// that think silently for minutes before emitting tokens. Default: 180.
-    /// Overridable per-launch via `JCODE_STREAM_IDLE_TIMEOUT_SECS`.
+    /// no data received. Base budget only: high reasoning efforts scale it up
+    /// automatically (see `jcode_base::provider::stream_idle_timeout_for_effort`).
+    /// Default: 180. Overridable via `JCODE_STREAM_IDLE_TIMEOUT_SECS`.
     pub stream_idle_timeout_secs: u64,
 }
 

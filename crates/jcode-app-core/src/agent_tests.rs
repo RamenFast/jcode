@@ -15,6 +15,8 @@ struct DelayedProvider {
 
 struct NativeAutoCompactionProvider;
 
+struct NativeCompactionStreamProvider;
+
 fn content_text(content: &[ContentBlock]) -> &str {
     match content.first() {
         Some(ContentBlock::Text { text, .. }) => text,
@@ -101,6 +103,50 @@ impl Provider for NativeAutoCompactionProvider {
 
     async fn complete_simple(&self, _prompt: &str, _system: &str) -> Result<String> {
         Ok("manual summary from native-auto provider".to_string())
+    }
+}
+
+#[async_trait]
+impl Provider for NativeCompactionStreamProvider {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolDefinition],
+        _system: &str,
+        _resume_session_id: Option<&str>,
+    ) -> Result<EventStream> {
+        let (tx, rx) = tokio_mpsc::channel::<Result<StreamEvent>>(4);
+        tokio::spawn(async move {
+            let _ = tx
+                .send(Ok(StreamEvent::Compaction {
+                    trigger: "openai_native".to_string(),
+                    pre_tokens: Some(80_000),
+                    openai_encrypted_content: Some("enc_native_test".to_string()),
+                }))
+                .await;
+            let _ = tx
+                .send(Ok(StreamEvent::MessageEnd {
+                    stop_reason: Some("end_turn".to_string()),
+                }))
+                .await;
+        });
+        Ok(Box::pin(ReceiverStream::new(rx)))
+    }
+
+    fn name(&self) -> &str {
+        "openai"
+    }
+
+    fn supports_compaction(&self) -> bool {
+        true
+    }
+
+    fn uses_jcode_compaction(&self) -> bool {
+        false
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(Self)
     }
 }
 
@@ -214,6 +260,45 @@ async fn run_turn_streaming_mpsc_emits_keepalive_while_provider_is_quiet() {
 
     assert!(saw_text, "expected delayed provider text after keepalive");
     task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn run_turn_streaming_mpsc_emits_native_compaction_for_client_cache_reset() {
+    let _guard = crate::storage::lock_test_env();
+    let provider: Arc<dyn Provider> = Arc::new(NativeCompactionStreamProvider);
+    let registry = Registry::new(provider.clone()).await;
+    let mut agent = Agent::new(provider, registry);
+    agent.add_message(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "compact this".to_string(),
+            cache_control: None,
+        }],
+    );
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    agent.run_turn_streaming_mpsc(tx).await.unwrap();
+
+    let mut saw_native_compaction = false;
+    while let Ok(event) = rx.try_recv() {
+        if let ServerEvent::Compaction {
+            trigger,
+            messages_compacted,
+            ..
+        } = event
+        {
+            assert_eq!(trigger, "openai_native");
+            assert!(
+                messages_compacted.is_some_and(|count| count > 0),
+                "native compaction should report a non-empty compacted prefix"
+            );
+            saw_native_compaction = true;
+        }
+    }
+    assert!(
+        saw_native_compaction,
+        "native provider compaction must reach clients so they clear KV baselines"
+    );
 }
 
 /// Provider that transparently switches its model mid-stream, mimicking the
@@ -1182,6 +1267,46 @@ async fn tool_snapshot_is_stable_without_new_mcp_tools() {
         !second_names.iter().any(|n| n == "not_an_mcp_tool"),
         "non-MCP tool registered after lock must not leak into the snapshot"
     );
+}
+
+#[test]
+fn empty_post_tool_response_gets_more_than_one_retry() {
+    // Regression guard for the Claude Opus 5 benchmark incident. A provider can
+    // return an empty response immediately after tool results; that is a
+    // transient hiccup, not a finished task. With only one retry allowed, a
+    // single empty response (observed once in 43 turns) ended a 20-hour agent
+    // run with the work half-done and the submission unoptimized.
+    assert!(
+        Agent::MAX_EMPTY_POST_TOOL_CONTINUATION_ATTEMPTS > 1,
+        "a single retry lets one transient empty response end a long run"
+    );
+    // Bounded, so a genuinely finished agent still exits instead of looping.
+    assert!(Agent::MAX_EMPTY_POST_TOOL_CONTINUATION_ATTEMPTS <= 10);
+}
+
+#[test]
+fn output_budget_truncation_requests_a_continuation() {
+    // Regression guard for the Claude Opus 5 benchmark incident. A turn cut off
+    // by the output budget reports stop_reason=max_tokens and can contain zero
+    // tool calls, which otherwise looks exactly like a finished turn. The agent
+    // must treat it as incomplete and continue rather than ending the run.
+    assert!(Agent::should_continue_after_stop_reason("max_tokens"));
+    assert!(Agent::should_continue_after_stop_reason("MAX_TOKENS"));
+    assert!(Agent::should_continue_after_stop_reason(" max_tokens "));
+    assert!(Agent::should_continue_after_stop_reason(
+        "max_output_tokens"
+    ));
+    assert!(Agent::should_continue_after_stop_reason("length"));
+    assert!(Agent::should_continue_after_stop_reason("truncated"));
+    assert!(Agent::should_continue_after_stop_reason("incomplete"));
+
+    // Normal completions must not trigger a continuation loop.
+    assert!(!Agent::should_continue_after_stop_reason("end_turn"));
+    assert!(!Agent::should_continue_after_stop_reason("tool_use"));
+    assert!(!Agent::should_continue_after_stop_reason("stop"));
+    // An absent reason is the pre-fix wire behaviour: it cannot be recovered
+    // from, which is precisely why MessageEnd must forward the real reason.
+    assert!(!Agent::should_continue_after_stop_reason(""));
 }
 
 #[test]

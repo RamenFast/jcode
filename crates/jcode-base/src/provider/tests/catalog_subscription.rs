@@ -86,20 +86,22 @@ fn test_anthropic_live_catalog_replaces_static_fallback_list() {
 
     // Use a model the static classifier does not recognize so this exercises
     // the generic catalog-driven path (>=1M cached limit => synthesized [1m]
-    // alias). Known models (e.g. opus-4-8/4-7) are classified statically.
+    // alias). The id must carry no parseable version, because any versioned
+    // Claude id is now classified statically (>=5.0 => native 1M, which
+    // deliberately gets no redundant [1m] alias).
     populate_context_limits(
-        [("claude-opus-5-preview".to_string(), 1_048_576)]
+        [("claude-nebula-preview".to_string(), 1_048_576)]
             .into_iter()
             .collect(),
     );
-    populate_anthropic_models(vec!["claude-opus-5-preview".to_string()]);
+    populate_anthropic_models(vec!["claude-nebula-preview".to_string()]);
     let models = known_anthropic_model_ids();
 
     assert_eq!(
         models,
         vec![
-            "claude-opus-5-preview".to_string(),
-            "claude-opus-5-preview[1m]".to_string()
+            "claude-nebula-preview".to_string(),
+            "claude-nebula-preview[1m]".to_string()
         ]
     );
 
@@ -147,8 +149,8 @@ fn test_anthropic_model_catalog_hydrates_from_disk_cache() {
         crate::env::remove_var("ANTHROPIC_API_KEY");
         crate::auth::claude::set_active_account_override(Some("disk-claude".to_string()));
         persist_anthropic_model_catalog(&AnthropicModelCatalog {
-            available_models: vec!["claude-opus-5-preview".to_string()],
-            context_limits: [("claude-opus-5-preview".to_string(), 1_048_576)]
+            available_models: vec!["claude-nebula-preview".to_string()],
+            context_limits: [("claude-nebula-preview".to_string(), 1_048_576)]
                 .into_iter()
                 .collect(),
         });
@@ -156,12 +158,12 @@ fn test_anthropic_model_catalog_hydrates_from_disk_cache() {
         assert_eq!(
             cached_anthropic_model_ids(),
             Some(vec![
-                "claude-opus-5-preview".to_string(),
-                "claude-opus-5-preview[1m]".to_string()
+                "claude-nebula-preview".to_string(),
+                "claude-nebula-preview[1m]".to_string()
             ])
         );
         assert_eq!(
-            context_limit_for_model("claude-opus-5-preview"),
+            context_limit_for_model("claude-nebula-preview"),
             Some(1_048_576)
         );
 
@@ -258,7 +260,7 @@ fn test_subscription_model_guard_allows_only_curated_models_when_enabled() {
 }
 
 #[test]
-fn test_subscription_model_guard_gates_flagship_models_on_plus_tier() {
+fn test_subscription_model_guard_gates_ultra_models_on_plus_tier() {
     let _guard = crate::storage::lock_test_env();
     let temp_home = tempfile::tempdir().expect("temp home");
     crate::env::set_var("JCODE_HOME", temp_home.path().to_string_lossy().to_string());
@@ -267,15 +269,15 @@ fn test_subscription_model_guard_gates_flagship_models_on_plus_tier() {
     crate::subscription_catalog::apply_runtime_env();
 
     // Unknown/absent tier behaves like Plus: Sol is available, while the
-    // Flagship-only Fable model is rejected with an upgrade hint.
+    // Ultra-tier Fable model is rejected with an upgrade hint.
     assert!(ensure_model_allowed_for_subscription("gpt-5.6-sol").is_ok());
     let error = ensure_model_allowed_for_subscription("claude-fable-5")
         .expect_err("fable should be gated on Plus");
-    assert!(error.to_string().contains("Flagship"), "{error}");
+    assert!(error.to_string().contains("Ultra"), "{error}");
     assert!(error.to_string().contains("Upgrade"), "{error}");
 
-    // Flagship tier unlocks Fable too.
-    crate::env::set_var(crate::subscription_catalog::JCODE_TIER_ENV, "flagship");
+    // Ultra tier unlocks Fable too.
+    crate::env::set_var(crate::subscription_catalog::JCODE_TIER_ENV, "ultra");
     assert!(ensure_model_allowed_for_subscription("claude-fable-5").is_ok());
     assert!(ensure_model_allowed_for_subscription("sol").is_ok());
 
@@ -302,7 +304,7 @@ fn test_filtered_display_models_respects_curated_subscription_catalog() {
         "claude-fable-5".to_string(),
     ]);
 
-    // Plus (default) tier includes Sol and hides only Flagship-only Fable.
+    // Plus (default) tier includes Sol and hides only Ultra-tier Fable.
     assert_eq!(
         filtered,
         vec![
@@ -313,7 +315,7 @@ fn test_filtered_display_models_respects_curated_subscription_catalog() {
         ]
     );
 
-    crate::env::set_var(crate::subscription_catalog::JCODE_TIER_ENV, "flagship");
+    crate::env::set_var(crate::subscription_catalog::JCODE_TIER_ENV, "ultra");
     let filtered = filtered_display_models(vec![
         "claude-fable-5".to_string(),
         "gpt-5.6-sol".to_string(),

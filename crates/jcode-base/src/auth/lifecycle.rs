@@ -1114,53 +1114,21 @@ fn apply_auth_provider_runtime(provider_id: Option<&str>) -> Option<String> {
 }
 
 fn direct_provider_activation(provider_id: &str) -> Option<ProviderActivation> {
-    match normalized_login_provider_id(provider_id)? {
-        "claude" => Some(ProviderActivation::locked(
-            RuntimeProviderId::Claude,
-            ActiveProvider::Claude,
-        )),
-        "claude-api" => Some(ProviderActivation::locked(
-            RuntimeProviderId::ClaudeApiKey,
-            ActiveProvider::Claude,
-        )),
-        "openai" => Some(ProviderActivation::locked(
-            RuntimeProviderId::OpenAi,
-            ActiveProvider::OpenAI,
-        )),
-        "openai-api" => Some(ProviderActivation::locked(
-            RuntimeProviderId::OpenAiApiKey,
-            ActiveProvider::OpenAI,
-        )),
-        "openrouter" => Some(ProviderActivation::locked(
-            RuntimeProviderId::OpenRouter,
-            ActiveProvider::OpenRouter,
-        )),
-        "jcode" => Some(ProviderActivation::locked(
-            RuntimeProviderId::Jcode,
-            ActiveProvider::OpenRouter,
-        )),
-        "bedrock" => Some(ProviderActivation::locked(
-            RuntimeProviderId::Bedrock,
-            ActiveProvider::Bedrock,
-        )),
-        "cursor" => Some(ProviderActivation::locked(
-            RuntimeProviderId::Cursor,
-            ActiveProvider::Cursor,
-        )),
-        "copilot" => Some(ProviderActivation::locked(
-            RuntimeProviderId::Copilot,
-            ActiveProvider::Copilot,
-        )),
-        "gemini" => Some(ProviderActivation::locked(
-            RuntimeProviderId::Gemini,
-            ActiveProvider::Gemini,
-        )),
-        "antigravity" => Some(ProviderActivation::locked(
-            RuntimeProviderId::Antigravity,
-            ActiveProvider::Antigravity,
-        )),
-        _ => None,
-    }
+    let (runtime_id, active) = match normalized_login_provider_id(provider_id)? {
+        "claude" => (RuntimeProviderId::Claude, ActiveProvider::Claude),
+        "claude-api" => (RuntimeProviderId::ClaudeApiKey, ActiveProvider::Claude),
+        "openai" => (RuntimeProviderId::OpenAi, ActiveProvider::OpenAI),
+        "openai-api" => (RuntimeProviderId::OpenAiApiKey, ActiveProvider::OpenAI),
+        "openrouter" => (RuntimeProviderId::OpenRouter, ActiveProvider::OpenRouter),
+        "jcode" => (RuntimeProviderId::Jcode, ActiveProvider::OpenRouter),
+        "bedrock" => (RuntimeProviderId::Bedrock, ActiveProvider::Bedrock),
+        "cursor" => (RuntimeProviderId::Cursor, ActiveProvider::Cursor),
+        "copilot" => (RuntimeProviderId::Copilot, ActiveProvider::Copilot),
+        "gemini" => (RuntimeProviderId::Gemini, ActiveProvider::Gemini),
+        "antigravity" => (RuntimeProviderId::Antigravity, ActiveProvider::Antigravity),
+        _ => return None,
+    };
+    Some(ProviderActivation::initial(runtime_id, active))
 }
 
 pub fn model_switch_request_for_provider_id(
@@ -1455,7 +1423,7 @@ mod tests {
         ] {
             crate::env::remove_var("JCODE_RUNTIME_PROVIDER");
             crate::env::remove_var("JCODE_ACTIVE_PROVIDER");
-            crate::env::remove_var("JCODE_FORCE_PROVIDER");
+            crate::env::remove_var("JCODE_INITIAL_PROVIDER_EXPLICIT");
 
             let activation = activate_auth_change(&AuthActivationRequest::new(
                 None,
@@ -1471,7 +1439,10 @@ mod tests {
                 std::env::var("JCODE_ACTIVE_PROVIDER").as_deref(),
                 Ok(active)
             );
-            assert_eq!(std::env::var("JCODE_FORCE_PROVIDER").as_deref(), Ok("1"));
+            assert_eq!(
+                std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT").as_deref(),
+                Ok("1")
+            );
         }
     }
 
@@ -1547,7 +1518,7 @@ mod tests {
 
             crate::env::remove_var("JCODE_RUNTIME_PROVIDER");
             crate::env::remove_var("JCODE_ACTIVE_PROVIDER");
-            crate::env::remove_var("JCODE_FORCE_PROVIDER");
+            crate::env::remove_var("JCODE_INITIAL_PROVIDER_EXPLICIT");
 
             let activation = activate_auth_change(&AuthActivationRequest::new(
                 None,
@@ -1566,7 +1537,10 @@ mod tests {
                 std::env::var("JCODE_ACTIVE_PROVIDER").as_deref(),
                 Ok(active)
             );
-            assert_eq!(std::env::var("JCODE_FORCE_PROVIDER").as_deref(), Ok("1"));
+            assert_eq!(
+                std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT").as_deref(),
+                Ok("1")
+            );
             let expected_switch = if switch_prefix.is_empty() {
                 "shared-model".to_string()
             } else {
@@ -1982,6 +1956,13 @@ mod tests {
     fn post_auth_model_selection_keeps_catalog_order_for_unranked_providers() {
         // OpenAI-compatible / namespaced providers have no curated flagship
         // order; the fallback must preserve live-catalog order for them.
+        //
+        // Selection consults the process-global namespaced catalog, so hold the
+        // shared test-env lock (and a private JCODE_HOME) or a sibling test's
+        // cached catalog decides this assertion depending on ordering.
+        let _env = EnvGuard::new(&["JCODE_HOME"]);
+        let temp = tempfile::tempdir().expect("tempdir");
+        crate::env::set_var("JCODE_HOME", temp.path());
         let activation = AuthActivationResult {
             provider_id: Some("cerebras".to_string()),
             provider_label: Some("Cerebras".to_string()),

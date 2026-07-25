@@ -137,8 +137,12 @@ mouse_capture = true
 # Enable debug socket for external control/testing (default: false)
 debug_socket = false
 
-# Show thinking/reasoning content (default: true)
-show_thinking = true
+# Render emoji in terminal-facing TUI and CLI output (default: true).
+# Set false here or set JCODE_NO_EMOJI=1 for ASCII fallbacks.
+emoji = true
+
+# Show thinking/reasoning content (default: false)
+show_thinking = false
 
 # How to display reasoning/thinking content: "off", "full", or "current".
 #   off     - never show reasoning
@@ -146,7 +150,7 @@ show_thinking = true
 #   current - show only the live reasoning; collapse it once the model commits
 #             an assistant message or runs a tool, then show the next one
 # When unset, falls back to show_thinking (true => full, false => off).
-reasoning_display = "current"
+reasoning_display = "off"
 
 # Markdown spacing style: "compact" (chat/TUI) or "document" (docs-like)
 # markdown_spacing = "compact"
@@ -331,6 +335,8 @@ cross_provider_failover = "countdown"
 # Applies to every streaming provider path (OpenAI native, Anthropic, Copilot,
 # OpenRouter/OpenAI-compatible). The TUI's client-side stall guard also extends
 # to match this value. Also overridable per-launch via JCODE_STREAM_IDLE_TIMEOUT_SECS.
+# This is the base budget: high reasoning efforts scale it up automatically
+# (high 2x, xhigh 3x, max/swarm 4x) since they think silently for much longer.
 # stream_idle_timeout_secs = 600
 
 [agents]
@@ -409,6 +415,8 @@ swarm_max_concurrent_agents = 32
 # memory_embedding_dim = 1536
 
 [terminal]
+# Without a hook, clients inside tmux automatically use a right-side pane.
+# Set JCODE_TERMINAL to force a supported terminal emulator instead.
 # External command that takes over headed session spawns (swarm agents,
 # resume-in-new-terminal, self-dev windows, restart restores).
 #

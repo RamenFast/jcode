@@ -1,11 +1,18 @@
 use super::*;
+use crate::{terminal_eprintln as eprintln, terminal_print as print, terminal_println as println};
 
 impl Agent {
     /// Run turns until no more tool calls
     /// Maximum number of context-limit compaction retries before giving up.
     pub(super) const MAX_CONTEXT_LIMIT_RETRIES: u32 = 5;
     pub(super) const MAX_INCOMPLETE_CONTINUATION_ATTEMPTS: u32 = 3;
-    pub(super) const MAX_EMPTY_POST_TOOL_CONTINUATION_ATTEMPTS: u32 = 1;
+    /// Retries allowed when the provider returns an empty response right after
+    /// tool results. This is a transient provider hiccup, not a signal that the
+    /// task is finished, so a single retry is too few: one empty response
+    /// observed once in 43 turns silently ended a 20-hour benchmark run with the
+    /// task half-done. The counter is per turn-loop, so a genuinely finished
+    /// agent still exits promptly.
+    pub(crate) const MAX_EMPTY_POST_TOOL_CONTINUATION_ATTEMPTS: u32 = 5;
 
     pub(super) async fn run_turn(&mut self, print_output: bool) -> Result<String> {
         self.set_log_context();
@@ -43,7 +50,11 @@ impl Agent {
                         .pre_tokens
                         .map(|t| format!(" ({} tokens)", t))
                         .unwrap_or_default();
-                    println!("📦 Context compacted ({}){}", event.trigger, tokens_str);
+                    crate::terminal_println!(
+                        "📦 Context compacted ({}){}",
+                        event.trigger,
+                        tokens_str
+                    );
                 }
             }
 
@@ -236,7 +247,7 @@ impl Agent {
                     StreamEvent::ThinkingDelta(thinking_text) => {
                         // Display reasoning content only if enabled
                         if print_output && crate::config::config().display.show_thinking {
-                            println!("💭 {}", thinking_text);
+                            crate::terminal_println!("💭 {}", thinking_text);
                         }
                         // Always capture reasoning text so it can be persisted as a
                         // history-only trace, regardless of provider replay support.
@@ -259,7 +270,7 @@ impl Agent {
                     }
                     StreamEvent::TextDelta(text) => {
                         if print_output {
-                            print!("{}", text);
+                            crate::terminal_print!("{}", text);
                             io::stdout().flush()?;
                         }
                         text_content.push_str(&text);
@@ -527,7 +538,11 @@ impl Agent {
                             let tokens_str = pre_tokens
                                 .map(|t| format!(" ({} tokens)", t))
                                 .unwrap_or_default();
-                            println!("📦 Context compacted ({}){}", trigger, tokens_str);
+                            crate::terminal_println!(
+                                "📦 Context compacted ({}){}",
+                                trigger,
+                                tokens_str
+                            );
                         }
                     }
                     StreamEvent::NativeToolCall {

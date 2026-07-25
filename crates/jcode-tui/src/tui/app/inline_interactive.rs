@@ -76,30 +76,9 @@ fn model_picker_favorites_path() -> Option<std::path::PathBuf> {
         .map(|dir| dir.join(MODEL_PICKER_FAVORITES_FILE))
 }
 
-/// Whether a picker route's runtime can apply a per-request reasoning effort.
-/// Effort rows are only rendered for these routes; other routes (Copilot,
-/// Bedrock, Antigravity CLI, remote-catalog placeholders, ...) get one plain
-/// row per model because a picked effort could not actually be applied.
-fn route_supports_reasoning_effort(api_method: &str) -> bool {
-    use crate::provider::ModelRouteApiMethod as Method;
-    match Method::parse(api_method) {
-        Method::ClaudeOAuth
-        | Method::AnthropicApiKey
-        | Method::OpenAIOAuth
-        | Method::OpenAIApiKey
-        | Method::OpenRouter => true,
-        Method::JcodeSubscription
-        | Method::OpenAiCompatible { .. }
-        | Method::Copilot
-        | Method::Cursor
-        | Method::Bedrock
-        | Method::CodeAssistOAuth
-        | Method::AntigravityHttps
-        | Method::RemoteCatalog
-        | Method::Current
-        | Method::Other(_) => false,
-    }
-}
+#[path = "inline_interactive_placeholder_routes.rs"]
+mod placeholder_routes;
+use placeholder_routes::route_supports_reasoning_effort;
 
 /// Apply the `provider.model_picker_providers` allowlist (issue #460).
 ///
@@ -558,8 +537,8 @@ impl App {
     /// auth method: an older session may have baked an OAuth-only fallback
     /// route into the cache, which would otherwise permanently hide the
     /// API-key route for that model.
-    fn append_jcode_subscription_routes(
-        &self,
+    fn append_jcode_subscription_routes_static(
+        remote_available_entries: &[String],
         routes: &mut Vec<crate::provider::ModelRoute>,
         require_credentials: bool,
         require_remote_advertisement: bool,
@@ -584,7 +563,7 @@ impl App {
                 tier.allows(model.min_tier)
                     && !existing.contains(model.id)
                     && (!require_remote_advertisement
-                        || self.remote_available_entries.iter().any(|available| {
+                        || remote_available_entries.iter().any(|available| {
                             crate::subscription_catalog::canonical_model_id(available)
                                 == Some(model.id)
                         }))
@@ -605,19 +584,40 @@ impl App {
         &self,
         routes: &mut Vec<crate::provider::ModelRoute>,
     ) {
-        if !self.is_remote || self.remote_available_entries.is_empty() {
+        if !self.is_remote {
+            return;
+        }
+        Self::extend_remote_routes_for_uncovered_models_static(
+            self.remote_provider_name.as_deref(),
+            &self.remote_available_entries,
+            routes,
+        );
+    }
+
+    /// Self-free variant of the route extension so the background picker
+    /// loader can run it off the UI thread with cloned catalog state.
+    fn extend_remote_routes_for_uncovered_models_static(
+        remote_provider_name: Option<&str>,
+        remote_available_entries: &[String],
+        routes: &mut Vec<crate::provider::ModelRoute>,
+    ) {
+        if remote_available_entries.is_empty() {
             return;
         }
         // Jcode subscription routes are a complete, server-managed catalog.
         // Do not mix in locally configured Anthropic/OpenAI credentials merely
         // because a curated model also belongs to one of those upstreams.
-        let provider_is_jcode_subscription =
-            self.remote_provider_name.as_deref().is_some_and(|name| {
-                name.eq_ignore_ascii_case(crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME)
-            });
+        let provider_is_jcode_subscription = remote_provider_name.is_some_and(|name| {
+            name.eq_ignore_ascii_case(crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME)
+        });
         if provider_is_jcode_subscription {
             routes.clear();
-            self.append_jcode_subscription_routes(routes, false, false);
+            Self::append_jcode_subscription_routes_static(
+                remote_available_entries,
+                routes,
+                false,
+                false,
+            );
             return;
         }
         let poisoned_by_jcode_subscription = !routes.is_empty()
@@ -632,10 +632,15 @@ impl App {
             // routes from the names catalog, then append only the current tier's
             // actual subscription entitlements.
             *routes = crate::provider::remote_model_routes_fallback(
-                self.remote_provider_name.as_deref(),
-                &self.remote_available_entries,
+                remote_provider_name,
+                remote_available_entries,
             );
-            self.append_jcode_subscription_routes(routes, false, true);
+            Self::append_jcode_subscription_routes_static(
+                remote_available_entries,
+                routes,
+                false,
+                true,
+            );
             return;
         }
         let mut methods_by_model: std::collections::HashMap<&str, HashSet<&str>> =
@@ -649,12 +654,15 @@ impl App {
         let auth = crate::auth::AuthStatus::check_fast();
         let bedrock_available = auth.bedrock != crate::auth::AuthState::NotConfigured
             || crate::provider::bedrock::BedrockProvider::has_credentials();
-        let missing: Vec<String> = self
-            .remote_available_entries
+        let missing: Vec<String> = remote_available_entries
             .iter()
             .filter(|model| match methods_by_model.get(model.as_str()) {
                 None => true,
                 Some(methods) => {
+                    // Poisoned caches pin models to placeholder rows forever;
+                    // see inline_interactive_placeholder_routes.rs.
+                    let placeholder_only =
+                        placeholder_routes::methods_are_placeholder_only(methods.iter());
                     let missing_anthropic_method = crate::provider::provider_for_model(model)
                         == Some("claude")
                         && !model.contains('/')
@@ -663,7 +671,7 @@ impl App {
                     let missing_bedrock_method = bedrock_available
                         && crate::provider::bedrock::BedrockProvider::is_bedrock_model_id(model)
                         && !methods.contains("bedrock");
-                    missing_anthropic_method || missing_bedrock_method
+                    placeholder_only || missing_anthropic_method || missing_bedrock_method
                 }
             })
             .cloned()
@@ -679,10 +687,9 @@ impl App {
                     )
                 })
                 .collect();
-            for route in crate::provider::remote_model_routes_fallback(
-                self.remote_provider_name.as_deref(),
-                &missing,
-            ) {
+            for route in
+                crate::provider::remote_model_routes_fallback(remote_provider_name, &missing)
+            {
                 if !existing.contains(&(
                     route.model.clone(),
                     route.provider.clone(),
@@ -698,7 +705,12 @@ impl App {
         // The curated client catalog is versioned with the backend and is the
         // authority for managed subscription entitlements. Do not hide newly
         // launched subscription models behind a stale remote names snapshot.
-        self.append_jcode_subscription_routes(routes, true, false);
+        Self::append_jcode_subscription_routes_static(
+            remote_available_entries,
+            routes,
+            true,
+            false,
+        );
     }
 
     fn hydrate_remote_model_catalog_snapshot(
@@ -728,7 +740,15 @@ impl App {
             return;
         }
 
-        let snapshot = self.remote_model_catalog_snapshot();
+        let mut snapshot = self.remote_model_catalog_snapshot();
+        // Never persist placeholder routes; see
+        // inline_interactive_placeholder_routes.rs.
+        snapshot
+            .model_routes
+            .retain(|route| !placeholder_routes::is_placeholder_route_method(&route.api_method));
+        if snapshot.model_routes.is_empty() {
+            return;
+        }
         if !remote_model_catalog_snapshot_is_safe(&snapshot) {
             crate::logging::warn("Refusing to persist an invalid remote model catalog");
             return;
@@ -916,6 +936,22 @@ impl App {
         self.open_model_picker_inner(true);
     }
 
+    /// Rebuild an already-open `/model` picker after a fresh catalog arrives.
+    ///
+    /// Catalog updates only invalidate the picker cache, so a picker opened on
+    /// placeholder ("remote-catalog") rows would keep showing them until the
+    /// user closed and reopened it. Reopen in place instead, preserving the
+    /// typed filter.
+    pub(super) fn refresh_open_model_picker_after_catalog_update(&mut self) {
+        let picker_open = self
+            .inline_interactive_state
+            .as_ref()
+            .is_some_and(picker_is_runtime_model_picker);
+        if picker_open && !self.auth_catalog_refresh_pending {
+            self.open_model_picker_preserving_input();
+        }
+    }
+
     /// Apply a completed auth-driven catalog refresh to an already-open picker.
     /// Login/import can finish while `/model` is visible, so merely invalidating
     /// its cache would leave the stale pre-login entries on screen until the user
@@ -1036,11 +1072,51 @@ impl App {
             }
             // Names-only remote catalog: synthesize properly classified
             // provider routes (Comtegra/Copilot/Bedrock/Gemini/OpenRouter/…)
-            // rather than a generic "remote-catalog" placeholder. This is the
-            // final route set for this open (there is no async upgrade after
-            // it), and the full fallback only reads local config/disk caches,
-            // so it is cheap enough for the cold-open path.
-            self.build_remote_model_routes_fallback()
+            // rather than a generic "remote-catalog" placeholder. The full
+            // fallback reads per-model disk caches and auth state, which can
+            // take seconds on a large catalog, so for big catalogs open
+            // instantly with lightweight names-only routes and upgrade in the
+            // background. Small catalogs stay synchronous so the first paint
+            // already has effort-expanded, provider-classified rows.
+            const SYNC_REMOTE_FALLBACK_MAX_MODELS: usize = 64;
+            if self.remote_available_entries.len() <= SYNC_REMOTE_FALLBACK_MAX_MODELS {
+                self.build_remote_model_routes_fallback()
+            } else {
+                let routes = self.build_remote_model_routes_lightweight_fallback(&current_model);
+                let routes_ms = routes_started.elapsed().as_millis();
+                self.open_model_picker_with_routes(
+                    cache_signature.clone(),
+                    picker_started,
+                    routes,
+                    routes_ms,
+                    preserve_input,
+                    false,
+                );
+                if self.inline_interactive_state.is_some() {
+                    self.set_status_notice("Updating model routes…");
+                } else {
+                    self.open_loading_model_picker(&current_model);
+                }
+                let remote_provider_name = self.remote_provider_name.clone();
+                let remote_available_entries = self.remote_available_entries.clone();
+                self.start_model_picker_route_load_with(
+                    cache_signature,
+                    picker_started,
+                    move || {
+                        let mut routes = crate::provider::remote_model_routes_fallback(
+                            remote_provider_name.as_deref(),
+                            &remote_available_entries,
+                        );
+                        Self::extend_remote_routes_for_uncovered_models_static(
+                            remote_provider_name.as_deref(),
+                            &remote_available_entries,
+                            &mut routes,
+                        );
+                        routes
+                    },
+                );
+                return;
+            }
         } else {
             self.simplified_model_routes_for_picker(&current_model)
         };
@@ -1100,13 +1176,26 @@ impl App {
         signature: ModelPickerCacheSignature,
         picker_started: std::time::Instant,
     ) {
+        let provider = self.provider.clone();
+        self.start_model_picker_route_load_with(signature, picker_started, move || {
+            provider.model_routes()
+        });
+    }
+
+    /// Run an arbitrary route builder off the UI thread and deliver the result
+    /// through the pending-load channel polled by `poll_model_picker_load`.
+    fn start_model_picker_route_load_with(
+        &mut self,
+        signature: ModelPickerCacheSignature,
+        picker_started: std::time::Instant,
+        build_routes: impl FnOnce() -> Vec<crate::provider::ModelRoute> + Send + 'static,
+    ) {
         self.model_picker_load_request_id = self.model_picker_load_request_id.wrapping_add(1);
         let request_id = self.model_picker_load_request_id;
-        let provider = self.provider.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         let build = move || {
             let routes_started = std::time::Instant::now();
-            let routes = provider.model_routes();
+            let routes = build_routes();
             let routes_ms = routes_started.elapsed().as_millis();
             let _ = tx.send(Ok(ModelPickerRoutesResult { routes, routes_ms }));
         };
@@ -1753,8 +1842,9 @@ impl App {
         );
 
         let routes_started = std::time::Instant::now();
+        let took_remote_options = self.is_remote && !self.remote_model_options.is_empty();
         let routes: Vec<crate::provider::ModelRoute> = if self.is_remote {
-            if !self.remote_model_options.is_empty() {
+            if took_remote_options {
                 let mut routes = std::mem::take(&mut self.remote_model_options);
                 self.extend_remote_routes_for_uncovered_models(&mut routes);
                 routes
@@ -1823,7 +1913,10 @@ impl App {
         self.model_picker_cache = previous_model_picker_cache;
         self.pending_model_picker_load = previous_pending_model_picker_load;
         self.model_picker_load_request_id = previous_model_picker_load_request_id;
-        if self.is_remote && self.remote_model_options.is_empty() {
+        if took_remote_options && self.remote_model_options.is_empty() {
+            // Restore only routes that originated from remote_model_options.
+            // Lightweight fallback routes carry placeholder "remote-catalog"
+            // methods and must never be written back as the detailed catalog.
             self.remote_model_options = routes;
         }
         self.input = previous_input;
@@ -3187,11 +3280,27 @@ impl App {
                         let method_label =
                             crate::provider::ModelRouteApiMethod::parse(&route.api_method)
                                 .display_label();
-                        let notice = format!(
-                            "Model → {} via {} ({})",
-                            entry.name, route.provider, method_label
-                        );
-                        let route_detail = route.detail.trim().to_string();
+                        // Placeholder routes ("remote-catalog"/"current") are
+                        // catalog-refresh stand-ins, not real provider routes:
+                        // surfacing them produced confusing notices like
+                        // "Model → x via Claude (remote-catalog) · refreshing
+                        // route details…" right before the real switch
+                        // confirmation. Show just the model in that case.
+                        let placeholder_route =
+                            placeholder_routes::is_placeholder_route_method(&route.api_method);
+                        let notice = if placeholder_route {
+                            format!("Model → {}", entry.name)
+                        } else {
+                            format!(
+                                "Model → {} via {} ({})",
+                                entry.name, route.provider, method_label
+                            )
+                        };
+                        let route_detail = if placeholder_route {
+                            String::new()
+                        } else {
+                            route.detail.trim().to_string()
+                        };
 
                         // Record exactly which model spec + route the user chose
                         // and how it will be applied. Pairs with the server-side
@@ -3335,13 +3444,16 @@ impl App {
             picker.filtered = (0..picker.entries.len()).collect();
         } else {
             let query = picker.filter.trim();
+            // Prepare the query once per keystroke instead of re-parsing and
+            // re-lowercasing it for every entry.
+            let prepared = jcode_fuzzy::PreparedTokenQuery::new(&picker.filter);
             let mut scored: Vec<(usize, bool, i32)> = picker
                 .entries
                 .iter()
                 .enumerate()
                 .filter_map(|(i, m)| {
                     let filter_text = picker.filter_text(m);
-                    Self::picker_fuzzy_score(&picker.filter, &filter_text).map(|s| {
+                    prepared.score(&filter_text).map(|s| {
                         let usage_bonus = m.usage_score.min(i32::MAX as u32) as i32;
                         let bonus = usage_bonus + if m.recommended { 5 } else { 0 };
                         (

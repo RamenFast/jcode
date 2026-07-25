@@ -230,11 +230,10 @@ impl Provider for AuthChangeMockProvider {
     }
 }
 
+/// Shared process-wide lock: env vars are global, so a private mutex here would
+/// race every other env-mutating test (issue #593).
 fn lock_env() -> StdMutexGuard<'static, ()> {
-    static LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| StdMutex::new(()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    crate::storage::lock_test_env()
 }
 
 struct EnvGuard {
@@ -563,7 +562,7 @@ async fn notify_auth_changed_with_azure_hint_applies_runtime_model_without_compl
         "JCODE_OPENROUTER_MODEL",
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_ACTIVE_PROVIDER",
-        "JCODE_FORCE_PROVIDER",
+        "JCODE_INITIAL_PROVIDER_EXPLICIT",
     ]);
     crate::env::set_var("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com");
     crate::env::set_var("AZURE_OPENAI_MODEL", "azure-deployment");
@@ -660,7 +659,7 @@ fn cerebras_auth_hint_applies_openai_compatible_runtime_profile() {
         "JCODE_OPENROUTER_MODEL",
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_ACTIVE_PROVIDER",
-        "JCODE_FORCE_PROVIDER",
+        "JCODE_INITIAL_PROVIDER_EXPLICIT",
     ]);
 
     let request =
@@ -715,7 +714,7 @@ async fn notify_auth_changed_typed_cerebras_event_controls_user_visible_catalog_
         "JCODE_OPENROUTER_MODEL",
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_ACTIVE_PROVIDER",
-        "JCODE_FORCE_PROVIDER",
+        "JCODE_INITIAL_PROVIDER_EXPLICIT",
     ]);
 
     crate::bus::reset_models_updated_publish_state_for_tests();
@@ -796,7 +795,7 @@ async fn notify_auth_changed_switches_from_stale_model_to_matching_provider_rout
         "JCODE_OPENROUTER_MODEL",
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_ACTIVE_PROVIDER",
-        "JCODE_FORCE_PROVIDER",
+        "JCODE_INITIAL_PROVIDER_EXPLICIT",
     ]);
 
     crate::bus::reset_models_updated_publish_state_for_tests();
@@ -865,7 +864,7 @@ async fn onboarding_auth_refresh_prefers_global_gpt_5_6_route_over_fable() {
     let _guard = EnvGuard::save(&[
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_ACTIVE_PROVIDER",
-        "JCODE_FORCE_PROVIDER",
+        "JCODE_INITIAL_PROVIDER_EXPLICIT",
     ]);
     crate::bus::reset_models_updated_publish_state_for_tests();
 
@@ -936,7 +935,7 @@ async fn notify_auth_changed_does_not_override_manual_model_selected_during_refr
         "JCODE_OPENROUTER_MODEL",
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_ACTIVE_PROVIDER",
-        "JCODE_FORCE_PROVIDER",
+        "JCODE_INITIAL_PROVIDER_EXPLICIT",
     ]);
 
     crate::bus::reset_models_updated_publish_state_for_tests();
@@ -1063,7 +1062,7 @@ async fn auth_model_first_prompt_e2e_state_space_is_bounded_by_selection_source(
             "JCODE_OPENROUTER_MODEL",
             "JCODE_RUNTIME_PROVIDER",
             "JCODE_ACTIVE_PROVIDER",
-            "JCODE_FORCE_PROVIDER",
+            "JCODE_INITIAL_PROVIDER_EXPLICIT",
         ]);
 
         crate::bus::reset_models_updated_publish_state_for_tests();
@@ -1235,7 +1234,7 @@ async fn notify_auth_changed_switches_only_current_session_model() {
         "JCODE_OPENROUTER_MODEL",
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_ACTIVE_PROVIDER",
-        "JCODE_FORCE_PROVIDER",
+        "JCODE_INITIAL_PROVIDER_EXPLICIT",
     ]);
 
     crate::bus::reset_models_updated_publish_state_for_tests();

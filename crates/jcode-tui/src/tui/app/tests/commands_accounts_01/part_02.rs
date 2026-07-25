@@ -238,7 +238,8 @@ fn test_subscription_command_shows_jcode_status_scaffold() {
     assert!(msg.content.contains("Pro"));
     assert!(msg.content.contains("Max"));
     assert!(msg.content.contains("Ultra"));
-    assert!(msg.content.contains("Flagship"));
+    assert!(msg.content.contains("Solo"));
+    assert!(!msg.content.contains("Flagship"));
     assert!(msg.content.contains("$10/mo"));
     assert!(msg.content.contains("$20/mo"));
     assert!(msg.content.contains("$100/mo"));
@@ -249,8 +250,27 @@ fn test_subscription_command_shows_jcode_status_scaffold() {
     assert!(msg.content.contains("$225.00 usable"));
     assert!(msg.content.contains("$500.00 usable"));
     assert!(msg.content.contains("$3000.00 usable"));
-    assert!(!msg.content.contains("GPT-5.6 Sol - gpt-5.6-sol [Flagship]"));
-    assert!(msg.content.contains("Claude Fable 5 - claude-fable-5 [Flagship]"));
+    assert!(!msg.content.contains("GPT-5.6 Sol - gpt-5.6-sol [Solo]"));
+    assert!(msg.content.contains("Claude Fable 5 - claude-fable-5 [Ultra]"));
+}
+
+#[test]
+fn test_subscribe_command_shows_pitch_with_plans_and_next_step() {
+    let mut app = create_test_app();
+    app.input = "/subscribe".to_string();
+    app.submit_input();
+
+    let msg = app
+        .display_messages()
+        .last()
+        .expect("missing /subscribe response");
+    assert_eq!(msg.role, "system");
+    assert!(msg.content.contains("Subscribe to jcode"));
+    assert!(msg.content.contains("Get more tokens"));
+    assert!(msg.content.contains("open source"));
+    assert!(msg.content.contains("/login jcode"));
+    assert!(msg.content.contains("/subscription"));
+    assert!(msg.content.contains("$20/mo"));
 }
 
 #[test]

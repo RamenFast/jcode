@@ -34,7 +34,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 #[cfg(test)]
 use unicode_width::UnicodeWidthStr;
-
 #[path = "ui_animations.rs"]
 mod animations;
 #[path = "ui_box.rs"]
@@ -67,6 +66,7 @@ mod memory_ui;
 mod messages;
 #[path = "ui_onboarding.rs"]
 mod onboarding;
+mod output_style;
 #[path = "ui_overlays.rs"]
 mod overlays;
 #[path = "ui_pinned.rs"]
@@ -83,7 +83,6 @@ pub(crate) mod tools_ui;
 mod transitions;
 #[path = "ui_viewport.rs"]
 mod viewport;
-
 use crate::tui::mermaid;
 #[cfg(test)]
 pub(crate) use box_utils::truncate_line_to_width;
@@ -134,6 +133,7 @@ pub(crate) use messages::{
     render_assistant_message, render_background_task_message, render_reasoning_message,
     render_swarm_message, render_system_message, render_tool_message, render_usage_message,
 };
+pub(crate) use output_style::adapt_buffer_for_emoji_preference;
 pub use pinned_ui::{
     SidePanelDebugStats, SidePanelMermaidProbe, SidePanelMermaidProbeRect,
     debug_probe_side_panel_mermaid,
@@ -520,7 +520,7 @@ use layout_support::{
 #[cfg(test)]
 pub(crate) use status_support::calculate_input_lines;
 use status_support::{
-    binary_age, format_status_for_debug, is_running_stable_release, semver, shorten_model_name,
+    format_status_for_debug, is_running_stable_release, semver, shorten_model_name,
 };
 use theme_support::{
     accent_color, activity_indicator, activity_indicator_frame_index, ai_color, ai_text,
@@ -1391,6 +1391,22 @@ pub fn last_layout_snapshot() -> Option<LayoutSnapshot> {
             .ok()
             .and_then(|snapshot| *snapshot)
     }
+}
+
+/// The one lock guarding process-global render state in tests.
+///
+/// Render snapshots, scroll metrics, flicker history, and prompt positions all
+/// live in process globals, so *every* test that renders must serialize on the
+/// same mutex. Two separate helpers previously each defined their own private
+/// lock, which serialized nothing between them and produced failures that
+/// appeared only under parallelism (same root cause as issue #593). Both now
+/// delegate here.
+#[cfg(test)]
+pub(crate) fn render_state_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]
@@ -2486,12 +2502,12 @@ pub fn draw(frame: &mut Frame, app: &dyn TuiState) {
     // Doing this at the buffer level covers every widget and overlay without
     // touching individual color call sites.
     jcode_tui_style::adapt_buffer_for_theme(frame.buffer_mut());
+    adapt_buffer_for_emoji_preference(frame.buffer_mut());
     // Cache eviction/clearing can outlive the last visible image. Carry Kitty
     // deletion commands on any completed frame so terminal-side pixel storage
     // is reclaimed even when no image widget renders again.
     crate::tui::mermaid::render_pending_terminal_image_cleanup(frame.buffer_mut());
 }
-
 /// Rows reserved below the input for the decorative idle donut.
 ///
 /// The donut only shows on an (effectively) empty idle screen, which means it

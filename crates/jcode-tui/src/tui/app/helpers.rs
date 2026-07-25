@@ -1,5 +1,7 @@
 #![cfg_attr(test, allow(clippy::items_after_test_module))]
 
+pub(crate) mod model_names;
+
 use crate::todo::TodoItem;
 use crate::tui::info_widget::{AmbientWidgetData, GitInfo, MemoryInfo};
 use crate::tui::session_picker::ResumeTarget;
@@ -229,62 +231,9 @@ pub(super) fn debug_response_path() -> PathBuf {
     std::env::temp_dir().join("jcode_debug_response")
 }
 
-/// Parse rate limit reset time from error message
-/// Returns the Duration until rate limit resets, if this is a rate limit error
-pub(super) fn parse_rate_limit_error(error: &str) -> Option<Duration> {
-    let error_lower = error.to_lowercase();
-
-    if !error_lower.contains("rate limit")
-        && !error_lower.contains("rate_limit")
-        && !error_lower.contains("429")
-        && !error_lower.contains("too many requests")
-        && !error_lower.contains("hit your limit")
-    {
-        return None;
-    }
-
-    if let Some(idx) = error_lower.find("retry") {
-        let after = &error_lower[idx..];
-        for word in after.split_whitespace() {
-            if let Ok(secs) = word
-                .trim_matches(|c: char| !c.is_ascii_digit())
-                .parse::<u64>()
-                && secs > 0
-                && secs < 86400
-            {
-                return Some(Duration::from_secs(secs));
-            }
-        }
-    }
-
-    if let Some(idx) = error_lower.find("resets") {
-        let after = &error_lower[idx..];
-        for word in after.split_whitespace() {
-            let word = word.trim_matches(|c: char| c == '·' || c == ' ');
-            if (word.ends_with("am") || word.ends_with("pm"))
-                && let Some(duration) = parse_clock_time_to_duration(word)
-            {
-                return Some(duration);
-            }
-        }
-    }
-
-    if let Some(idx) = error_lower.find("reset") {
-        let after = &error_lower[idx..];
-        for word in after.split_whitespace() {
-            if let Ok(secs) = word
-                .trim_matches(|c: char| !c.is_ascii_digit())
-                .parse::<u64>()
-                && secs > 0
-                && secs < 86400
-            {
-                return Some(Duration::from_secs(secs));
-            }
-        }
-    }
-
-    None
-}
+#[path = "helpers_rate_limit_parse.rs"]
+mod rate_limit_parse;
+pub(super) use rate_limit_parse::parse_rate_limit_error;
 
 pub(super) fn is_context_limit_error(error: &str) -> bool {
     if crate::provider::openai_request::is_openai_encrypted_content_too_large_error(error) {
@@ -498,90 +447,6 @@ pub(super) fn effort_display_label(effort: &str) -> &str {
         "none" => "None",
         other => other,
     }
-}
-
-/// Turn a raw model id into a friendlier display name for onboarding copy.
-///
-/// Examples:
-///   `gpt-5.5`            -> `GPT-5.5`
-///   `claude-opus-4-8`    -> `Claude Opus 4.8`
-///   `claude-opus-4-6[1m]`-> `Claude Opus 4.6 (1M)`
-///   `gemini-2.5-pro`     -> `Gemini 2.5 Pro`
-/// Unknown shapes are returned mostly as-is so we never hide the real id.
-pub(crate) fn pretty_model_display_name(model: &str) -> String {
-    let model = model.trim();
-    if model.is_empty() {
-        return "your default model".to_string();
-    }
-
-    // Preserve and re-attach a `[1m]` long-context suffix as " (1M)".
-    let (core, long_context) = match model.strip_suffix("[1m]") {
-        Some(stripped) => (stripped, true),
-        None => (model, false),
-    };
-
-    let lower = core.to_ascii_lowercase();
-    let mut pretty = if let Some(rest) = lower.strip_prefix("gpt-") {
-        // OpenAI: keep the dotted version, just upcase the family.
-        format!("GPT-{}", rest)
-    } else if lower.starts_with("claude-") {
-        // Anthropic: claude-opus-4-8 -> Claude Opus 4.8. Convert the trailing
-        // `-<major>-<minor>` version into `<major>.<minor>` and title-case the
-        // family/tier words.
-        prettify_claude(core)
-    } else {
-        // Gemini and everything else: just title-case the dashed segments.
-        title_case_dashed(core)
-    };
-
-    if long_context {
-        pretty.push_str(" (1M)");
-    }
-    pretty
-}
-
-/// Render `claude-opus-4-8` as `Claude Opus 4.8`.
-fn prettify_claude(core: &str) -> String {
-    let parts: Vec<&str> = core.split('-').collect();
-    let mut words: Vec<String> = Vec::new();
-    let mut i = 0;
-    while i < parts.len() {
-        let part = parts[i];
-        // Collapse a `<major>-<minor>` numeric pair into `<major>.<minor>`.
-        if part.chars().all(|c| c.is_ascii_digit())
-            && i + 1 < parts.len()
-            && parts[i + 1].chars().all(|c| c.is_ascii_digit())
-        {
-            words.push(format!("{}.{}", part, parts[i + 1]));
-            i += 2;
-            continue;
-        }
-        words.push(title_case_word(part));
-        i += 1;
-    }
-    words.join(" ")
-}
-
-/// Title-case a dash-separated id (`gemini-2.5-pro` -> `Gemini 2.5 Pro`).
-fn title_case_dashed(core: &str) -> String {
-    core.split('-')
-        .map(title_case_word)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Title-case a single token, leaving anything containing a digit untouched so
-/// version fragments like `4.8` or `2.5` are preserved.
-fn title_case_word(word: &str) -> String {
-    if word.is_empty() {
-        return String::new();
-    }
-    if word.chars().any(|c| c.is_ascii_digit()) {
-        return word.to_string();
-    }
-    let mut chars = word.chars();
-    let first = chars.next().unwrap().to_ascii_uppercase();
-    format!("{}{}", first, chars.as_str())
 }
 
 pub(super) fn inferred_reasoning_efforts(

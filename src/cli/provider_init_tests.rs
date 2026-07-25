@@ -47,6 +47,7 @@ fn test_provider_choice_arg_values() {
     assert_eq!(ProviderChoice::Minimax.as_arg_value(), "minimax");
     assert_eq!(ProviderChoice::Xai.as_arg_value(), "xai");
     assert_eq!(ProviderChoice::XiaomiMimo.as_arg_value(), "xiaomi-mimo");
+    assert_eq!(ProviderChoice::Celeris.as_arg_value(), "celeris");
     assert_eq!(ProviderChoice::Lmstudio.as_arg_value(), "lmstudio");
     assert_eq!(ProviderChoice::Ollama.as_arg_value(), "ollama");
     assert_eq!(ProviderChoice::Chutes.as_arg_value(), "chutes");
@@ -81,7 +82,7 @@ async fn explicit_anthropic_api_choice_pins_api_key_over_available_oauth() {
         "ANTHROPIC_API_KEY",
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_ACTIVE_PROVIDER",
-        "JCODE_FORCE_PROVIDER",
+        "JCODE_INITIAL_PROVIDER_EXPLICIT",
     ];
     let saved: Vec<(&str, Option<String>)> = keys
         .iter()
@@ -93,7 +94,7 @@ async fn explicit_anthropic_api_choice_pins_api_key_over_available_oauth() {
     for key in [
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_ACTIVE_PROVIDER",
-        "JCODE_FORCE_PROVIDER",
+        "JCODE_INITIAL_PROVIDER_EXPLICIT",
     ] {
         crate::env::remove_var(key);
     }
@@ -206,7 +207,7 @@ fn test_init_provider_jcode_delegates_runtime_profile_to_wrapper() {
     crate::env::remove_var("JCODE_OPENROUTER_MODEL");
     crate::env::remove_var("JCODE_RUNTIME_PROVIDER");
     crate::env::remove_var("JCODE_ACTIVE_PROVIDER");
-    crate::env::remove_var("JCODE_FORCE_PROVIDER");
+    crate::env::remove_var("JCODE_INITIAL_PROVIDER_EXPLICIT");
 
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
     let provider = runtime
@@ -228,7 +229,9 @@ fn test_init_provider_jcode_delegates_runtime_profile_to_wrapper() {
         Some("jcode")
     );
     assert_eq!(
-        std::env::var("JCODE_FORCE_PROVIDER").ok().as_deref(),
+        std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT")
+            .ok()
+            .as_deref(),
         Some("1")
     );
 
@@ -236,7 +239,7 @@ fn test_init_provider_jcode_delegates_runtime_profile_to_wrapper() {
     crate::env::remove_var("JCODE_OPENROUTER_MODEL");
     crate::env::remove_var("JCODE_RUNTIME_PROVIDER");
     crate::env::remove_var("JCODE_ACTIVE_PROVIDER");
-    crate::env::remove_var("JCODE_FORCE_PROVIDER");
+    crate::env::remove_var("JCODE_INITIAL_PROVIDER_EXPLICIT");
     match saved_home {
         Some(home) => crate::env::set_var("JCODE_HOME", home),
         None => crate::env::remove_var("JCODE_HOME"),
@@ -545,7 +548,7 @@ fn resolved_profile_default_model_uses_openai_compatible_override() {
 }
 
 #[test]
-fn apply_login_provider_profile_env_locks_compatible_profile_for_auto_spawn() {
+fn apply_login_provider_profile_env_preserves_compatible_profile_for_auto_spawn() {
     let _guard = lock_env();
     let _env_guard = crate::storage::lock_test_env();
     let saved: Vec<(String, Option<String>)> = [
@@ -647,7 +650,7 @@ async fn init_provider_for_ollama_reapplies_local_compat_runtime_env_after_disab
         "JCODE_OPENROUTER_TRANSPORT_STATE",
         "JCODE_OPENROUTER_ALLOW_NO_AUTH",
         "JCODE_RUNTIME_PROVIDER",
-        "JCODE_FORCE_PROVIDER",
+        "JCODE_INITIAL_PROVIDER_EXPLICIT",
         "JCODE_ACTIVE_PROVIDER",
     ]
     .iter()
@@ -682,7 +685,9 @@ async fn init_provider_for_ollama_reapplies_local_compat_runtime_env_after_disab
         Some("1")
     );
     assert_eq!(
-        std::env::var("JCODE_FORCE_PROVIDER").ok().as_deref(),
+        std::env::var("JCODE_INITIAL_PROVIDER_EXPLICIT")
+            .ok()
+            .as_deref(),
         Some("1")
     );
     assert_eq!(
@@ -734,7 +739,7 @@ async fn auto_provider_uses_config_default_named_no_auth_provider() {
         "JCODE_NAMED_PROVIDER_PROFILE",
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_ACTIVE_PROVIDER",
-        "JCODE_FORCE_PROVIDER",
+        "JCODE_INITIAL_PROVIDER_EXPLICIT",
     ]
     .iter()
     .map(|k| (k.to_string(), std::env::var(k).ok()))
@@ -760,7 +765,7 @@ async fn auto_provider_uses_config_default_named_no_auth_provider() {
         "JCODE_NAMED_PROVIDER_PROFILE",
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_ACTIVE_PROVIDER",
-        "JCODE_FORCE_PROVIDER",
+        "JCODE_INITIAL_PROVIDER_EXPLICIT",
     ] {
         crate::env::remove_var(key);
     }
@@ -825,7 +830,7 @@ async fn auto_provider_noninteractive_skips_untrusted_external_auth_instead_of_b
         "CURSOR_API_KEY",
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_ACTIVE_PROVIDER",
-        "JCODE_FORCE_PROVIDER",
+        "JCODE_INITIAL_PROVIDER_EXPLICIT",
     ]
     .iter()
     .map(|k| (k.to_string(), std::env::var(k).ok()))
@@ -842,7 +847,7 @@ async fn auto_provider_noninteractive_skips_untrusted_external_auth_instead_of_b
         "GEMINI_API_KEY",
         "CURSOR_API_KEY",
         "JCODE_ACTIVE_PROVIDER",
-        "JCODE_FORCE_PROVIDER",
+        "JCODE_INITIAL_PROVIDER_EXPLICIT",
     ] {
         crate::env::remove_var(key);
     }

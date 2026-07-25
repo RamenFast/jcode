@@ -225,6 +225,49 @@ pub struct TodoItem {
     pub assigned_to: Option<String>,
 }
 
+/// Plan-level understanding of what the user actually wants, covering the
+/// whole todo list rather than one group.
+///
+/// Intent is a property of the request, not of an individual group of steps,
+/// so it is recorded once per plan: what the user is really after, and how
+/// faithfully the plan and its feedback loops represent that.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TodoPlan {
+    /// The user's underlying reason and desired outcome for this work, kept
+    /// distinct from the agent's steps and validation loops.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_intention: Option<String>,
+    /// How well the agent understands what the user actually wants and how
+    /// faithfully this plan represents it, from 0-100. It does not measure
+    /// implementation progress. Older payloads called this `alignment_score`.
+    #[serde(
+        default,
+        alias = "alignment_score",
+        alias = "user_intention_alignment",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub understands_user_intent: Option<u8>,
+}
+
+/// A plan field changed by a todo-tool update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoPlanField {
+    UserIntention,
+    #[serde(alias = "alignment_score", alias = "user_intention_alignment")]
+    UnderstandsUserIntent,
+}
+
+/// Before/after state for the plan-level intent assessment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TodoPlanChange {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<TodoPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<TodoPlan>,
+    pub fields: Vec<TodoPlanField>,
+}
+
 /// A goal-level assessment attached to a todo group (or, for an ungrouped
 /// flat list, the whole list as one implicit goal with `group: None`).
 ///
@@ -238,23 +281,10 @@ pub struct TodoGoal {
     /// Group label this goal describes. `None` covers the ungrouped list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
-    /// The user's underlying reason or desired outcome for this goal, kept
-    /// distinct from the agent's measurable objective and validation loop.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub user_intention: Option<String>,
-    /// How well the current goal, objective, and planned work align with the
-    /// user's stated request and underlying intention, from 0-100.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub user_intention_alignment: Option<u8>,
     /// How hill-climbable this goal is, from 0-100: can progress be measured
     /// against a quantifiable, verifiable objective and iterated on?
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hill_climbability: Option<u8>,
-    /// The measurable objective progress is climbing toward, when one exists
-    /// (e.g. "p50 grep latency under 50ms on the repo corpus"). A stated
-    /// objective is what makes a high score credible.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub objective: Option<String>,
     /// The concrete feedback loop used to judge whether each iteration improves
     /// the outcome (e.g. a benchmark command and the metric it reports).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -271,10 +301,7 @@ pub struct TodoGoal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TodoGoalField {
-    UserIntention,
-    UserIntentionAlignment,
     HillClimbability,
-    Objective,
     FeedbackLoop,
     EndToEndOwnership,
 }

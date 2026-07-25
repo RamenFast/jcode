@@ -211,6 +211,48 @@ fn test_remote_fallback_bedrock_arn_does_not_create_openrouter_route() {
 }
 
 #[test]
+fn test_remote_placeholder_only_openai_routes_are_replaced_with_real_routes() {
+    // A poisoned persisted catalog can pin OpenAI models to placeholder
+    // "remote-catalog" routes (provider "OpenAI", detail "refreshing route
+    // details…"). Opening the picker must re-synthesize the model's real
+    // routes (OpenAI OAuth/API key) instead of showing the placeholder as
+    // the only option.
+    with_temp_jcode_home(|| {
+        crate::env::set_var("OPENAI_API_KEY", "sk-test-openai-key");
+        crate::auth::AuthStatus::invalidate_cache();
+
+        let model = "gpt-5.5";
+        let mut app = create_test_app();
+        app.is_remote = true;
+        app.remote_provider_name = Some("OpenAI".to_string());
+        app.remote_available_entries = vec![model.to_string()];
+        app.remote_model_options = vec![crate::provider::ModelRoute {
+            model: model.to_string(),
+            provider: "OpenAI".to_string(),
+            api_method: "remote-catalog".to_string(),
+            available: true,
+            detail: "refreshing route details…".to_string(),
+            cheapness: None,
+        }];
+
+        app.open_model_picker();
+
+        crate::env::remove_var("OPENAI_API_KEY");
+        crate::auth::AuthStatus::invalidate_cache();
+
+        assert!(
+            app.remote_model_options.iter().any(|route| {
+                route.model == model
+                    && crate::provider::ModelRouteApiMethod::parse(&route.api_method)
+                        .is_openai_credential_route()
+            }),
+            "expected a real OpenAI credential route for {model}, got {:?}",
+            app.remote_model_options
+        );
+    });
+}
+
+#[test]
 fn test_remote_hydrated_catalog_restores_missing_direct_bedrock_route() {
     with_temp_jcode_home(|| {
         let previous_enable = std::env::var_os("JCODE_BEDROCK_ENABLE");
@@ -413,12 +455,26 @@ fn test_remote_jcode_subscription_catalog_is_not_augmented_with_local_auth_route
         }
         crate::auth::AuthStatus::invalidate_cache();
 
-        assert_eq!(app.remote_model_options.len(), 7);
+        let expected = crate::subscription_catalog::curated_models()
+            .iter()
+            .filter(|model| {
+                crate::subscription_catalog::JcodeTier::Plus.allows(model.min_tier)
+            })
+            .map(|model| model.id)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(app.remote_model_options.len(), expected.len());
         assert!(app.remote_model_options.iter().all(|route| {
             route.provider == crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME
                 && route.api_method == crate::subscription_catalog::JCODE_ROUTE_API_METHOD
                 && route.available
         }));
+        assert_eq!(
+            app.remote_model_options
+                .iter()
+                .map(|route| route.model.as_str())
+                .collect::<std::collections::BTreeSet<_>>(),
+            expected
+        );
     });
 }
 
@@ -596,21 +652,20 @@ fn test_remote_hydrated_catalog_adds_entitled_jcode_subscription_routes() {
                     && route.api_method == crate::subscription_catalog::JCODE_ROUTE_API_METHOD
             })
             .collect::<Vec<_>>();
-        assert_eq!(jcode_routes.len(), 7);
+        let expected = crate::subscription_catalog::curated_models()
+            .iter()
+            .filter(|model| {
+                crate::subscription_catalog::JcodeTier::Plus.allows(model.min_tier)
+            })
+            .map(|model| model.id)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(jcode_routes.len(), expected.len());
         assert_eq!(
             jcode_routes
                 .iter()
                 .map(|route| route.model.as_str())
                 .collect::<std::collections::BTreeSet<_>>(),
-            std::collections::BTreeSet::from([
-                "claude-opus-4-8",
-                "claude-sonnet-4-6",
-                "deepseek-v3.2",
-                "devstral-2-123b",
-                "gpt-5.5",
-                "gpt-5.6-sol",
-                "qwen3-coder-next",
-            ])
+            expected
         );
         assert!(app.remote_model_options.iter().any(|route| {
             route.model == "claude-opus-4-8"
@@ -624,16 +679,10 @@ fn test_remote_hydrated_catalog_adds_entitled_jcode_subscription_routes() {
         }));
         assert!(app.remote_model_options.iter().all(|route| {
             route.provider != crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME
-                || matches!(
-                    route.model.as_str(),
-                    "claude-opus-4-8"
-                        | "claude-sonnet-4-6"
-                        | "deepseek-v3.2"
-                        | "devstral-2-123b"
-                        | "gpt-5.5"
-                        | "gpt-5.6-sol"
-                        | "qwen3-coder-next"
-                )
+                || crate::subscription_catalog::find_curated_model(&route.model)
+                    .is_some_and(|model| {
+                        crate::subscription_catalog::JcodeTier::Plus.allows(model.min_tier)
+                    })
         }));
     });
 }
@@ -1782,4 +1831,142 @@ fn test_model_picker_plain_selection_stages_no_effort_in_remote_mode() {
         app.pending_reasoning_effort.is_none(),
         "plain rows must not override the server's effort"
     );
+}
+
+#[test]
+fn test_model_switch_notice_omits_placeholder_route_details() {
+    // Selecting a model whose chosen row is a placeholder ("remote-catalog")
+    // must not advertise a bogus provider/method or the "refreshing route
+    // details…" text; those describe a catalog still being refreshed.
+    with_temp_jcode_home(|| {
+        let model = "placeholder-only-model";
+        let mut app = create_test_app();
+        app.is_remote = true;
+        app.remote_provider_name = Some("Some Server".to_string());
+        app.remote_provider_model = Some("other-model".to_string());
+        app.remote_available_entries = vec![model.to_string()];
+        app.remote_model_options = vec![crate::provider::ModelRoute {
+            model: model.to_string(),
+            provider: "Some Server".to_string(),
+            api_method: "remote-catalog".to_string(),
+            available: true,
+            detail: "refreshing route details…".to_string(),
+            cheapness: None,
+        }];
+
+        app.open_model_picker();
+        // Placeholder-only entries also get real routes synthesized, so locate
+        // the entry/option pair that is still the placeholder and pick it.
+        let (entry_idx, option_idx) = {
+            let picker = app
+                .inline_interactive_state
+                .as_ref()
+                .expect("model picker should be open");
+            picker
+                .entries
+                .iter()
+                .enumerate()
+                .find_map(|(entry_idx, entry)| {
+                    entry
+                        .options
+                        .iter()
+                        .position(|route| route.api_method == "remote-catalog")
+                        .map(|option_idx| (entry_idx, option_idx))
+                })
+                .expect("a placeholder route option should be present")
+        };
+        let filtered_pos = app
+            .inline_interactive_state
+            .as_ref()
+            .unwrap()
+            .filtered
+            .iter()
+            .position(|&i| i == entry_idx)
+            .expect("placeholder entry should be in the filtered list");
+        {
+            let picker = app.inline_interactive_state.as_mut().unwrap();
+            picker.selected = filtered_pos;
+            picker.entries[entry_idx].selected_option = option_idx;
+        }
+
+        app.handle_key(KeyCode::Enter, KeyModifiers::empty())
+            .unwrap();
+
+        let notice = app
+            .status_notice
+            .as_ref()
+            .map(|(text, _)| text.clone())
+            .expect("a model switch notice should be set");
+        assert!(!notice.contains("remote-catalog"), "got {notice}");
+        assert!(
+            !notice.contains("refreshing route details"),
+            "got {notice}"
+        );
+        assert!(notice.starts_with("Model → "), "got {notice}");
+        assert!(!notice.contains(" via "), "got {notice}");
+    });
+}
+
+#[test]
+fn test_catalog_update_rebuilds_open_model_picker_with_real_routes() {
+    // A picker opened while the catalog is still names-only shows placeholder
+    // rows. When the detailed catalog lands, the open picker must be rebuilt
+    // rather than left stale until the user reopens it.
+    with_temp_jcode_home(|| {
+        let model = "gpt-5.5";
+        let mut app = create_test_app();
+        app.is_remote = true;
+        app.remote_provider_name = Some("OpenAI".to_string());
+        app.remote_provider_model = Some(model.to_string());
+        app.remote_available_entries = vec![model.to_string()];
+        app.remote_model_options = vec![crate::provider::ModelRoute {
+            model: model.to_string(),
+            provider: "OpenAI".to_string(),
+            api_method: "remote-catalog".to_string(),
+            available: true,
+            detail: "refreshing route details…".to_string(),
+            cheapness: None,
+        }];
+
+        app.open_model_picker();
+        assert!(app.inline_interactive_state.is_some());
+
+        app.remote_model_options = vec![crate::provider::ModelRoute {
+            model: model.to_string(),
+            provider: "OpenAI".to_string(),
+            api_method: "openai-api".to_string(),
+            available: true,
+            detail: String::new(),
+            cheapness: None,
+        }];
+        app.invalidate_model_picker_cache();
+        app.refresh_open_model_picker_after_catalog_update();
+
+        let picker = app
+            .inline_interactive_state
+            .as_ref()
+            .expect("picker should still be open after the catalog update");
+        assert!(
+            picker.entries.iter().any(|entry| entry.name.starts_with(model)),
+            "rebuilt picker should still list the model"
+        );
+        assert!(
+            picker.entries.iter().all(|entry| {
+                entry
+                    .options
+                    .iter()
+                    .all(|route| route.api_method != "remote-catalog")
+            }),
+            "rebuilt picker should not keep placeholder rows"
+        );
+        assert!(
+            picker.entries.iter().any(|entry| {
+                entry
+                    .options
+                    .iter()
+                    .any(|route| route.api_method == "openai-api")
+            }),
+            "rebuilt picker should expose the real route"
+        );
+    });
 }

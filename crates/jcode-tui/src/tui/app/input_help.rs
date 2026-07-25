@@ -149,7 +149,7 @@ impl App {
                 "/selfdev\nSpawn a new self-dev jcode session in a separate terminal.\n\n/selfdev <prompt>\nSpawn a new self-dev session and auto-deliver the prompt to it.\n\n/selfdev status\nShow current self-dev/build status."
             }
             "fork" | "split" => {
-                "/fork\nFork the current session into a new window. Clones the full conversation history so both sessions continue from the same point.\n\n/fork <prompt>\nFork the session and start the new window by answering the prompt. The original session keeps working uninterrupted.\n\n/split\nAlias for /fork."
+                "/fork\nFork the current session into a new terminal pane or window. Clones the full conversation history so both sessions continue from the same point. Inside tmux, jcode automatically opens a right-side pane.\n\n/fork <prompt>\nFork the session and start the new pane/window by answering the prompt. The original session keeps working uninterrupted.\n\n/split\nAlias for /fork."
             }
             "resume" | "sessions" => {
                 "/resume\nOpen the interactive session picker. Browse and search all sessions, preview conversation history, and resume the highlighted session. By default, Enter resumes in the current terminal and Ctrl+Enter opens a new terminal; keybindings.session_picker_enter can swap those actions.{resume_shortcut}\n\nPress Esc to return to your current session."
@@ -163,6 +163,9 @@ impl App {
             }
             "subscription" => {
                 "/subscription\nShow curated jcode subscription status for this session, including router config, runtime mode, curated models, and planned tier budget scaffolding."
+            }
+            "subscribe" => {
+                "/subscribe\nWhy subscribe to jcode: more tokens on curated frontier models, one browser sign-in with no API keys, failover routing, and funding open-source development. Lists plans and prices, then start with /login jcode."
             }
             "version" => "/version\nShow jcode version/build details.",
             "changelog" => "/changelog\nShow recent changes embedded in this build.",

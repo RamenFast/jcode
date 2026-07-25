@@ -599,7 +599,7 @@ pub(in crate::tui::app) fn handle_server_event(
             | ServerEvent::ConnectionType { .. }
             | ServerEvent::ConnectionPhase { .. }
             | ServerEvent::StatusDetail { .. }
-            | ServerEvent::MessageEnd
+            | ServerEvent::MessageEnd { .. }
             | ServerEvent::RetryRollback { .. }
             | ServerEvent::UpstreamProvider { .. }
             | ServerEvent::Interrupted
@@ -930,6 +930,7 @@ pub(in crate::tui::app) fn handle_server_event(
             let cp = match phase.as_str() {
                 "authenticating" => crate::message::ConnectionPhase::Authenticating,
                 "connecting" => crate::message::ConnectionPhase::Connecting,
+                "sending request" => crate::message::ConnectionPhase::SendingRequest,
                 "waiting for response" => crate::message::ConnectionPhase::WaitingForResponse,
                 "streaming" => crate::message::ConnectionPhase::Streaming,
                 _ if phase.starts_with("retrying (") && phase.ends_with(')') => {
@@ -961,7 +962,7 @@ pub(in crate::tui::app) fn handle_server_event(
             app.status_detail = Some(detail);
             eager_stream_redraw
         }
-        ServerEvent::MessageEnd => {
+        ServerEvent::MessageEnd { .. } => {
             app.pause_streaming_tps(true);
             app.stream_message_ended = true;
             true
@@ -1243,10 +1244,9 @@ pub(in crate::tui::app) fn handle_server_event(
                     .as_ref()
                     .map(|pending| pending.is_system)
                 {
-                    app.push_display_message(DisplayMessage::system(format!(
-                        "⏳ Rate limit hit. Will auto-retry in {} seconds...",
-                        reset_duration.as_secs()
-                    )));
+                    let rate_limit_line =
+                        app.rate_limit_notice_with_nudge(reset_duration.as_secs());
+                    app.push_display_message(DisplayMessage::system(rate_limit_line));
                     if is_system {
                         app.set_status_notice("Rate limited; queued system retry");
                     } else {
@@ -2290,6 +2290,9 @@ pub(in crate::tui::app) fn handle_server_event(
             if provider_meta_changed {
                 app.update_terminal_title();
             }
+            // A picker opened before the catalog landed is showing placeholder
+            // rows; rebuild it in place now that real routes exist.
+            app.refresh_open_model_picker_after_catalog_update();
             // The catalog event can arrive while the client is otherwise idle.
             // Returning false here leaves the updated picker, refresh summary,
             // and status notice invisible until an unrelated input or periodic
@@ -2725,7 +2728,7 @@ pub(in crate::tui::app) fn handle_server_event(
                         app.set_status_notice(format!("{} launched", label));
                     } else {
                         app.push_display_message(DisplayMessage::system(format!(
-                            "✂ Split → {} (opened in new window)",
+                            "✂ Split → {} (opened in new pane/window)",
                             new_session_name,
                         )));
                         app.set_status_notice(format!("Split → {}", new_session_name));

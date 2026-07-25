@@ -10,7 +10,7 @@ use std::process::{Command as ProcessCommand, Stdio};
 
 use crate::{browser, gateway, memory, session, storage, tui};
 
-use super::terminal::init_tui_runtime;
+use super::{output::terminal_title, terminal::init_tui_runtime};
 
 mod menubar;
 mod provider_setup;
@@ -1537,7 +1537,7 @@ async fn run_ambient_visible() -> Result<()> {
 
     let _ = crossterm::execute!(
         std::io::stdout(),
-        crossterm::terminal::SetTitle("🤖 jcode ambient cycle")
+        crossterm::terminal::SetTitle(terminal_title("🤖 jcode ambient cycle"))
     );
 
     let result = app.run(terminal).await;
@@ -3042,9 +3042,10 @@ fn emit_ndjson_event(
                 &serde_json::json!({ "type": "status_detail", "detail": detail }),
             )
         }
-        ServerEvent::MessageEnd => {
-            write_json_line(stdout, &serde_json::json!({ "type": "message_end" }))
-        }
+        ServerEvent::MessageEnd { stop_reason } => write_json_line(
+            stdout,
+            &serde_json::json!({ "type": "message_end", "stop_reason": stop_reason }),
+        ),
         ServerEvent::UpstreamProvider { provider } => {
             state.upstream_provider = Some(provider.clone());
             write_json_line(

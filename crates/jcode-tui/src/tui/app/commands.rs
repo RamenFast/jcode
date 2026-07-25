@@ -111,63 +111,9 @@ pub(super) fn disable_auto_poke(app: &mut App) -> usize {
     cleared
 }
 
-pub(super) fn is_non_retryable_auto_poke_error(error: &str) -> bool {
-    let lower = error.to_ascii_lowercase();
-
-    // These failures are deterministic for the current request/session shape. Retrying the same
-    // auto-poke cannot help and can create an infinite spam loop.
-    let deterministic_markers = [
-        "400 bad request",
-        "invalid_request_error",
-        "string_above_max_length",
-        "string_too_long",
-        "maximum length",
-        "request too large",
-        "payload too large",
-        "body too large",
-        "input too large",
-        "context length exceeded",
-        "context_length_exceeded",
-        "maximum context length",
-        "token limit exceeded",
-        "invalid model",
-        "model_not_found",
-        "model_not_supported",
-        "unsupportedmodel",
-        "unsupported model",
-        "does not support the coding plan",
-        "coding plan feature",
-        "unsupported parameter",
-        "unsupported_value",
-        "invalid parameter",
-        "invalid schema",
-        "invalid tool",
-        "invalid image",
-        "image too large",
-        "unsupported image",
-        "unsupported file",
-        "file too large",
-        "content_policy_violation",
-        "safety_violation",
-        "permission_denied",
-        "unauthorized",
-        "401 unauthorized",
-        "403 forbidden",
-        "insufficient_quota",
-        "402 payment required",
-        "payment required",
-        "requires more credits",
-        "add more credits",
-        "more credits",
-        "billing",
-        "credit balance",
-        "out of credits",
-    ];
-
-    deterministic_markers
-        .iter()
-        .any(|marker| lower.contains(marker))
-}
+#[path = "commands_auto_poke_errors.rs"]
+mod auto_poke_errors;
+pub(super) use auto_poke_errors::is_non_retryable_auto_poke_error;
 
 /// Whether `error` is a transient connectivity failure (DNS, name resolution,
 /// routing, unreachable host) that the agent itself cannot repair by resending
@@ -3101,12 +3047,15 @@ fn handle_reasoning_display_command(app: &mut App, trimmed: &str) -> bool {
         && !trimmed.starts_with("/reasoning ")
         && trimmed != "/thinking"
         && !trimmed.starts_with("/thinking ")
+        && trimmed != "/thinking-display"
+        && !trimmed.starts_with("/thinking-display ")
     {
         return false;
     }
 
     let rest = trimmed
-        .strip_prefix("/reasoning")
+        .strip_prefix("/thinking-display")
+        .or_else(|| trimmed.strip_prefix("/reasoning"))
         .or_else(|| trimmed.strip_prefix("/thinking"))
         .unwrap_or_default()
         .trim();
@@ -3114,12 +3063,12 @@ fn handle_reasoning_display_command(app: &mut App, trimmed: &str) -> bool {
     if rest.is_empty() || matches!(rest, "show" | "status") {
         let current = crate::config::config().display.reasoning_display();
         app.push_display_message(DisplayMessage::system(format!(
-            "Reasoning display is currently {}.\n\n\
+            "Thinking display is currently {}.\n\n\
              Modes:\n\
-             • off - never show reasoning\n\
-             • full - keep every reasoning trace in the transcript\n\
-             • current - show only the live reasoning, then collapse it once a tool runs or the answer commits\n\n\
-             Use /reasoning <off|full|current> to change it.",
+             • off - never show thinking text\n\
+             • full - keep every thinking trace in the transcript\n\
+             • current - show only the live thinking, then collapse it once a tool runs or the answer commits\n\n\
+             Use /thinking-display <off|full|current> to change it. To change how hard the model thinks, use /effort.",
             current.label()
         )));
         return true;
@@ -3127,20 +3076,19 @@ fn handle_reasoning_display_command(app: &mut App, trimmed: &str) -> bool {
 
     let Some(mode) = crate::config::ReasoningDisplayMode::parse(rest) else {
         app.push_display_message(DisplayMessage::error(
-            "Usage: /reasoning (show), /reasoning off, /reasoning full, or /reasoning current"
-                .to_string(),
+            "Usage: /thinking-display (show), then off, full, or current".to_string(),
         ));
         return true;
     };
 
-    app.set_status_notice(format!("Reasoning display: {}", mode.label()));
+    app.set_status_notice(format!("Thinking display: {}", mode.label()));
     match crate::config::Config::set_reasoning_display(mode) {
         Ok(()) => app.push_display_message(DisplayMessage::system(format!(
-            "Saved reasoning display: {}. Applied to this session immediately.",
+            "Saved thinking display: {}. Applied to this session immediately.",
             mode.label()
         ))),
         Err(error) => app.push_display_message(DisplayMessage::error(format!(
-            "Applied reasoning display {} for this session, but failed to save it as the default: {}",
+            "Applied thinking display {} for this session, but failed to save it as the default: {}",
             mode.label(),
             error
         ))),
@@ -3481,6 +3429,59 @@ pub(super) fn handle_feedback_command(app: &mut App, trimmed: &str) -> bool {
 
 pub(super) fn handle_dev_command(app: &mut App, trimmed: &str) -> bool {
     super::tui_lifecycle_runtime::handle_dev_command(app, trimmed)
+}
+
+/// `/telemetry [everything|no-prompts|nothing]` - show or change the same
+/// three-way telemetry level offered by the onboarding "Telemetry settings"
+/// page, so the promise made there ("change this later with /telemetry") holds.
+pub(super) fn handle_telemetry_command(app: &mut App, trimmed: &str) -> bool {
+    let Some(rest) = trimmed.strip_prefix("/telemetry") else {
+        return false;
+    };
+    if !rest.is_empty()
+        && !rest
+            .chars()
+            .next()
+            .map(|c| c.is_whitespace())
+            .unwrap_or(false)
+    {
+        return false;
+    }
+
+    use crate::tui::app::onboarding_flow::TelemetryLevel;
+    let arg = rest.trim().to_ascii_lowercase();
+    let level = match arg.as_str() {
+        "" => {
+            let current = TelemetryLevel::current();
+            let detail = match current {
+                TelemetryLevel::Everything => {
+                    "Sending everything, including prompts and transcripts. Thank you."
+                }
+                TelemetryLevel::NoContent => {
+                    "Sending usage stats and crash reports only. No prompts or transcripts."
+                }
+                TelemetryLevel::Nothing => "Sending nothing.",
+            };
+            app.push_display_message(DisplayMessage::system(format!(
+                "{detail}\nChange it with /telemetry everything | no-prompts | nothing."
+            )));
+            app.set_status_notice(current.status_label());
+            return true;
+        }
+        "everything" | "all" => TelemetryLevel::Everything,
+        "no-prompts" | "no-content" | "usage" => TelemetryLevel::NoContent,
+        "nothing" | "off" | "none" => TelemetryLevel::Nothing,
+        other => {
+            app.push_display_message(DisplayMessage::error(format!(
+                "Unknown telemetry level \"{other}\". Use everything, no-prompts, or nothing."
+            )));
+            return true;
+        }
+    };
+    level.persist();
+    app.push_display_message(DisplayMessage::system(level.status_label().to_string()));
+    app.set_status_notice(level.status_label());
+    true
 }
 
 #[cfg(test)]
