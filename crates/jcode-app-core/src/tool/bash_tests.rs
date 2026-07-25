@@ -49,6 +49,61 @@ async fn test_basic_command_with_unused_stdin_channel() {
 }
 
 #[tokio::test]
+async fn high_impact_command_executes_without_approval_and_emits_ui_feedback() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let target = temp.path().join("recursive-delete-target");
+    std::fs::create_dir_all(&target).expect("create target directory");
+    std::fs::write(target.join("file.txt"), "delete me").expect("write target file");
+
+    let session_id = format!("high-impact-{}", std::process::id());
+    let mut events = crate::bus::Bus::global().subscribe();
+    let tool = BashTool::new();
+    let mut ctx = make_ctx(None);
+    ctx.session_id = session_id.clone();
+    let command = format!("rm -rf -- '{}'", target.display());
+
+    tool.execute(
+        json!({
+            "command": command,
+            "intent": "Verify permissive high-impact command visibility"
+        }),
+        ctx,
+    )
+    .await
+    .expect("high-impact command should execute without an approval gate");
+
+    assert!(
+        !target.exists(),
+        "the command must retain full execution access"
+    );
+    let activity = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match events.recv().await {
+                Ok(crate::bus::BusEvent::UiActivity(activity))
+                    if activity.session_id.as_deref() == Some(session_id.as_str()) =>
+                {
+                    return activity;
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("activity bus closed before command feedback arrived")
+                }
+            }
+        }
+    })
+    .await
+    .expect("high-impact UI feedback should arrive");
+    assert_eq!(activity.kind, crate::bus::UiActivityKind::Command);
+    assert!(activity.message.contains("proceeding immediately"));
+    assert!(
+        activity
+            .message
+            .contains("did not pause or restrict execution")
+    );
+    assert!(activity.message.contains("recursive file deletion"));
+}
+
+#[tokio::test]
 async fn test_stdin_forwarding_single_line() {
     let (tx, mut rx) = mpsc::unbounded_channel::<StdinInputRequest>();
     let tool = BashTool::new();

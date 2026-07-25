@@ -193,6 +193,9 @@ pub enum UiActivityKind {
     Auth,
     Catalog,
     Background,
+    /// Informational visibility for high-impact commands. This never implies
+    /// an approval gate or execution restriction.
+    Command,
 }
 
 impl UiActivityKind {
@@ -201,6 +204,7 @@ impl UiActivityKind {
             Self::Auth => "auth_activity",
             Self::Catalog => "catalog_activity",
             Self::Background => "background_activity",
+            Self::Command => "command_activity",
         }
     }
 }
@@ -255,6 +259,14 @@ impl UiActivity {
             message,
             status_notice,
         )
+    }
+
+    pub fn command(
+        session_id: Option<String>,
+        message: impl Into<String>,
+        status_notice: Option<impl Into<String>>,
+    ) -> Self {
+        Self::new(session_id, UiActivityKind::Command, message, status_notice)
     }
 
     pub fn is_visible_to_session(&self, session_id: &str) -> bool {
@@ -590,7 +602,7 @@ impl Bus {
 
 #[cfg(test)]
 mod tests {
-    use super::{Bus, BusEvent};
+    use super::{Bus, BusEvent, UiActivity, UiActivityKind};
     use tokio::time::{Duration, timeout};
 
     #[tokio::test]
@@ -620,5 +632,18 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[test]
+    fn command_activity_is_explicitly_informational_and_session_scoped() {
+        let activity = UiActivity::command(
+            Some("session-visible".to_string()),
+            "command is proceeding",
+            Some("high-impact command running"),
+        );
+        assert_eq!(activity.kind, UiActivityKind::Command);
+        assert_eq!(activity.kind.scope(), "command_activity");
+        assert!(activity.is_visible_to_session("session-visible"));
+        assert!(!activity.is_visible_to_session("session-other"));
     }
 }

@@ -299,7 +299,7 @@ pub(super) fn handle_ui_activity(app: &mut App, activity: UiActivity) -> bool {
         UiActivityKind::Background => {
             app.push_display_message(DisplayMessage::background_task(activity.message.clone()))
         }
-        UiActivityKind::Auth | UiActivityKind::Catalog => {
+        UiActivityKind::Auth | UiActivityKind::Catalog | UiActivityKind::Command => {
             if activity.message.trim().is_empty() {
                 // Status-only lifecycle updates should not leave blank transcript
                 // entries.
