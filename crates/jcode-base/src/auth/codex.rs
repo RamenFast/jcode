@@ -168,9 +168,7 @@ pub fn load_auth_file() -> Result<JcodeOpenAiAuthFile> {
     };
 
     if relabel_accounts(&mut auth) {
-        crate::logging::info(
-            "Renaming OpenAI accounts to numbered labels (openai-1, openai-2, ...)",
-        );
+        crate::logging::info("Repairing empty or duplicate OpenAI account labels");
         save_auth_file(&auth)?;
     }
 

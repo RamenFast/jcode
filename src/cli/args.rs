@@ -178,7 +178,7 @@ pub(crate) enum Command {
         #[arg(value_enum, id = "login_provider", value_name = "PROVIDER")]
         provider: Option<ProviderChoice>,
 
-        /// Account label for multi-account support (stored labels are auto-numbered)
+        /// Account label for multi-account support (new labels are preserved verbatim)
         #[arg(long, short = 'a')]
         account: Option<String>,
 

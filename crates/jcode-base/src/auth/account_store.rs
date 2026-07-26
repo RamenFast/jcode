@@ -53,13 +53,7 @@ where
         .map(str::trim)
         .filter(|requested| !requested.is_empty())
     {
-        if accounts
-            .iter()
-            .any(|account| label_of(account) == requested)
-        {
-            return requested.to_string();
-        }
-        return next_account_label(prefix, accounts.len());
+        return requested.to_string();
     }
 
     active_label
@@ -125,7 +119,11 @@ where
         return requested_label;
     }
 
-    let label = next_account_label(prefix, accounts.len());
+    let label = if requested_label.trim().is_empty() {
+        next_account_label(prefix, accounts.len())
+    } else {
+        requested_label
+    };
     let mut account = account;
     set_label(&mut account, label.clone());
     accounts.push(account);
@@ -154,23 +152,29 @@ where
     FGet: Fn(&T) -> &str + Copy,
     FSet: Fn(&mut T, String) + Copy,
 {
-    let label_map = accounts
-        .iter()
-        .enumerate()
-        .map(|(index, account)| {
-            (
-                label_of(account).to_string(),
-                canonical_account_label(prefix, index + 1),
-            )
-        })
-        .collect::<Vec<_>>();
+    let mut used_labels = std::collections::HashSet::new();
+    let mut next_index = 1;
+    let mut label_map = Vec::with_capacity(accounts.len());
     let mut changed = false;
 
-    for (account, (_, canonical_label)) in accounts.iter_mut().zip(label_map.iter()) {
-        if label_of(account) != canonical_label {
-            set_label(account, canonical_label.clone());
+    for account in accounts.iter_mut() {
+        let original = label_of(account).trim().to_string();
+        let label = if !original.is_empty() && used_labels.insert(original.clone()) {
+            original.clone()
+        } else {
+            loop {
+                let candidate = canonical_account_label(prefix, next_index);
+                next_index += 1;
+                if used_labels.insert(candidate.clone()) {
+                    break candidate;
+                }
+            }
+        };
+        if label_of(account) != label {
+            set_label(account, label.clone());
             changed = true;
         }
+        label_map.push((original, label));
     }
 
     let desired_active = if accounts.is_empty() {
@@ -219,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn relabel_accounts_canonicalizes_labels_and_active_label() {
+    fn relabel_accounts_preserves_unique_custom_labels() {
         let mut accounts = vec![
             Account {
                 label: "default".to_string(),
@@ -239,18 +243,15 @@ mod tests {
             |account, label| account.label = label,
         );
 
-        assert!(outcome.changed);
-        assert_eq!(accounts[0].label, "openai-1");
-        assert_eq!(accounts[1].label, "openai-2");
-        assert_eq!(active.as_deref(), Some("openai-2"));
-        assert_eq!(
-            outcome.canonical_override_label.as_deref(),
-            Some("openai-1")
-        );
+        assert!(!outcome.changed);
+        assert_eq!(accounts[0].label, "default");
+        assert_eq!(accounts[1].label, "other");
+        assert_eq!(active.as_deref(), Some("other"));
+        assert_eq!(outcome.canonical_override_label, None);
     }
 
     #[test]
-    fn upsert_account_assigns_next_label_and_sets_initial_active() {
+    fn upsert_account_preserves_custom_label_and_sets_initial_active() {
         let mut accounts = Vec::<Account>::new();
         let mut active = None;
 
@@ -259,14 +260,45 @@ mod tests {
             &mut accounts,
             &mut active,
             Account {
-                label: "ignored".to_string(),
+                label: "Anthropic0auth2".to_string(),
             },
             |account| account.label.as_str(),
             |account, label| account.label = label,
         );
 
-        assert_eq!(label, "claude-1");
-        assert_eq!(accounts[0].label, "claude-1");
-        assert_eq!(active.as_deref(), Some("claude-1"));
+        assert_eq!(label, "Anthropic0auth2");
+        assert_eq!(accounts[0].label, "Anthropic0auth2");
+        assert_eq!(active.as_deref(), Some("Anthropic0auth2"));
+    }
+
+    #[test]
+    fn relabel_accounts_repairs_empty_and_duplicate_labels_only() {
+        let mut accounts = vec![
+            Account {
+                label: "personal".to_string(),
+            },
+            Account {
+                label: "personal".to_string(),
+            },
+            Account {
+                label: String::new(),
+            },
+        ];
+        let mut active = Some("personal".to_string());
+
+        let outcome = relabel_accounts(
+            "claude",
+            &mut accounts,
+            &mut active,
+            None,
+            |account| account.label.as_str(),
+            |account, label| account.label = label,
+        );
+
+        assert!(outcome.changed);
+        assert_eq!(accounts[0].label, "personal");
+        assert_eq!(accounts[1].label, "claude-1");
+        assert_eq!(accounts[2].label, "claude-2");
+        assert_eq!(active.as_deref(), Some("personal"));
     }
 }
