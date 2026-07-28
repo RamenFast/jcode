@@ -1174,7 +1174,7 @@ fn retention_ratio_matrix() {
                     &messages,
                     keep_cutoff_for_char_budget(
                         &messages,
-                        manager.keep_tail_target_chars() / 2,
+                        manager.keep_tail_target_chars_with(&messages) / 2,
                         manager.min_keep_turns(),
                     ),
                 ),
@@ -1382,4 +1382,107 @@ fn compaction_config_knobs_change_cutoff() {
     floored.set_compaction_config(cfg);
     let kept = messages.len() - floored.standard_cutoff(&messages);
     assert_eq!(kept, 25, "min_keep_turns floor not honoured");
+}
+
+/// (i) Overhead-dominated windows: when the system prompt and tool definitions
+/// alone consume most of the context, there is genuinely little room left for
+/// conversation and the tail must collapse to the floor rather than pretending
+/// otherwise. Regression for a live 32k-window session where tools+system cost
+/// ~25k: the kept tail must not be sized against the raw budget.
+#[test]
+fn overhead_dominated_window_falls_back_to_floor() {
+    let budget = 32_000usize;
+    let messages = make_transcript(20_000, 1_000);
+    let mut manager = manager_with_budget(budget);
+    // Provider reports far more than the chars imply: the gap is tools/system.
+    manager.update_observed_input_tokens(30_000);
+
+    let cutoff = manager.standard_cutoff_with(&messages, &messages);
+    let kept = messages.len() - cutoff;
+    assert!(
+        kept >= MIN_TURNS_TO_KEEP,
+        "must always keep the minimum tail, kept {kept}"
+    );
+
+    // And the result must still leave headroom under the trigger.
+    let overhead = 30_000usize
+        .saturating_sub(messages.iter().map(message_char_count).sum::<usize>() / CHARS_PER_TOKEN);
+    let kept_tokens: usize = messages[cutoff..]
+        .iter()
+        .map(message_char_count)
+        .sum::<usize>()
+        / CHARS_PER_TOKEN;
+    let total = kept_tokens + overhead;
+    assert!(
+        total < budget,
+        "post-compaction total {total} must fit the {budget} window"
+    );
+}
+
+/// (j) A roomy window must not be dragged down by the overhead correction: the
+/// tail should still be budget-proportional when there is real room.
+#[test]
+fn roomy_window_keeps_proportional_tail_despite_overhead() {
+    let budget = 1_000_000usize;
+    let messages = make_transcript(800_000, 2_000);
+    let mut manager = manager_with_budget(budget);
+    manager.update_observed_input_tokens(820_000);
+
+    let cutoff = manager.standard_cutoff_with(&messages, &messages);
+    let kept_tokens: usize = messages[cutoff..]
+        .iter()
+        .map(message_char_count)
+        .sum::<usize>()
+        / CHARS_PER_TOKEN;
+    let r = kept_tokens as f32 / budget as f32;
+    assert!(
+        r > 0.25,
+        "a 1M window with modest overhead should still keep a large tail, got R={r:.3}"
+    );
+}
+
+/// (k) Regression for a live 70k-window session where emergency compaction
+/// dropped 16 of 18 messages, leaving 2.2% of context.
+///
+/// The cause was the fallback halving the kept turns (10 -> 5 -> 2) rather than
+/// searching for the largest tail that fits. Halving can only ever land on a
+/// power-of-two division of the floor, so whenever the true best tail sits
+/// between two of those steps it overshoots all the way down.
+///
+/// Here each message is ~7k tokens against a ~31.5k target: four fit, five do
+/// not. Halving tries 10 (too big), 5 (too big), then gives up at 2. A greedy
+/// char-budget fit keeps 4, twice as much conversation.
+#[test]
+fn hard_compact_finds_largest_fitting_tail_not_halved_floor() {
+    let budget = 70_000usize;
+    let messages: Vec<Message> = (0..18)
+        .map(|i| {
+            let role = if i % 2 == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            };
+            make_sized_message(role, 7_000, i)
+        })
+        .collect();
+
+    let mut manager = manager_with_budget(budget);
+    let cutoff = manager.hard_compact_with(&messages).expect("hard compact");
+    let kept = messages.len() - cutoff;
+    let kept_tokens: usize = messages[cutoff..]
+        .iter()
+        .map(message_char_count)
+        .sum::<usize>()
+        / CHARS_PER_TOKEN;
+
+    assert!(
+        kept > MIN_TURNS_TO_KEEP,
+        "kept only {kept} of {} messages ({kept_tokens} tokens in a {budget} window); \
+         the fallback collapsed to the floor instead of keeping the largest fitting tail",
+        messages.len()
+    );
+    assert!(
+        kept_tokens < budget,
+        "kept tail {kept_tokens} must still fit the {budget} window"
+    );
 }

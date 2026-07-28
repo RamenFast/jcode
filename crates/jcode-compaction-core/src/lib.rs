@@ -29,6 +29,13 @@ pub const RECENT_TURNS_TO_KEEP: usize = 10;
 /// while still reclaiming enough headroom that the next turn fits comfortably.
 pub const KEEP_TAIL_FRACTION: f32 = 0.45;
 
+/// Post-compaction ceiling on total context usage, overhead included.
+///
+/// The kept tail plus fixed overhead must land clearly under
+/// `COMPACTION_THRESHOLD`, or compaction would immediately re-trigger on its own
+/// output and thrash.
+pub const ANTI_THRASH_CEILING: f32 = 0.60;
+
 /// Hard ceiling on the configured keep fraction.
 ///
 /// The kept tail must land below `COMPACTION_THRESHOLD` or compaction would
@@ -242,21 +249,6 @@ pub fn system_overhead_for_budget(token_budget: usize) -> usize {
     } else {
         0
     }
-}
-
-/// How many tokens of recent conversation compaction should try to leave intact.
-///
-/// Measured against the *usable* budget (budget minus fixed overhead) so the
-/// post-compaction total, overhead included, still sits well under
-/// `COMPACTION_THRESHOLD`.
-pub fn keep_tail_target_tokens(token_budget: usize, keep_fraction: f32) -> usize {
-    let fraction = if keep_fraction.is_finite() {
-        keep_fraction.clamp(0.0, MAX_KEEP_TAIL_FRACTION)
-    } else {
-        KEEP_TAIL_FRACTION
-    };
-    let usable = token_budget.saturating_sub(system_overhead_for_budget(token_budget));
-    (usable as f64 * fraction as f64) as usize
 }
 
 /// Choose a compaction cutoff that keeps as much recent conversation as fits in

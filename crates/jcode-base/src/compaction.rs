@@ -27,19 +27,19 @@ use std::time::Instant;
 use tokio::task::JoinHandle;
 
 pub use jcode_compaction_core::{
-    CHARS_PER_TOKEN, COMPACTION_THRESHOLD, CRITICAL_THRESHOLD, CompactionAction, CompactionEvent,
-    CompactionStats, DEFAULT_TOKEN_BUDGET, EMBED_MAX_CHARS_PER_MSG, EMBEDDING_HISTORY_WINDOW,
-    EMERGENCY_IMAGE_MAX_CHARS, EMERGENCY_TOOL_RESULT_MAX_CHARS, KEEP_TAIL_FRACTION,
-    MANUAL_COMPACT_MIN_THRESHOLD, MAX_KEEP_TAIL_FRACTION, MIN_TURNS_TO_KEEP,
-    PAYLOAD_IMAGE_CHAR_BUDGET, RECENT_TURNS_TO_KEEP, SEMANTIC_EMBED_CACHE_CAPACITY, SUMMARY_PROMPT,
-    SYSTEM_OVERHEAD_TOKENS, Summary, TOKEN_HISTORY_WINDOW, build_compaction_prompt,
-    build_emergency_summary_text, compacted_summary_text_block, content_char_count,
-    effective_context_tokens_from_usage, emergency_strip_large_images,
-    emergency_truncate_large_payloads, estimate_compaction_tokens,
-    is_request_payload_too_large_error, keep_cutoff_for_char_budget, keep_tail_target_tokens,
-    mean_embedding, message_char_count, safe_compaction_cutoff, semantic_cache_key,
-    semantic_goal_text, semantic_message_text, strip_large_images_in_contents,
-    summary_payload_char_count,
+    ANTI_THRASH_CEILING, CHARS_PER_TOKEN, COMPACTION_THRESHOLD, CRITICAL_THRESHOLD,
+    CompactionAction, CompactionEvent, CompactionStats, DEFAULT_TOKEN_BUDGET,
+    EMBED_MAX_CHARS_PER_MSG, EMBEDDING_HISTORY_WINDOW, EMERGENCY_IMAGE_MAX_CHARS,
+    EMERGENCY_TOOL_RESULT_MAX_CHARS, KEEP_TAIL_FRACTION, MANUAL_COMPACT_MIN_THRESHOLD,
+    MAX_KEEP_TAIL_FRACTION, MIN_TURNS_TO_KEEP, PAYLOAD_IMAGE_CHAR_BUDGET, RECENT_TURNS_TO_KEEP,
+    SEMANTIC_EMBED_CACHE_CAPACITY, SUMMARY_PROMPT, SYSTEM_OVERHEAD_TOKENS, Summary,
+    TOKEN_HISTORY_WINDOW, build_compaction_prompt, build_emergency_summary_text,
+    compacted_summary_text_block, content_char_count, effective_context_tokens_from_usage,
+    emergency_strip_large_images, emergency_truncate_large_payloads, estimate_compaction_tokens,
+    is_request_payload_too_large_error, keep_cutoff_for_char_budget, mean_embedding,
+    message_char_count, safe_compaction_cutoff, semantic_cache_key, semantic_goal_text,
+    semantic_message_text, strip_large_images_in_contents, summary_payload_char_count,
+    system_overhead_for_budget,
 };
 
 const HARD_THRESHOLD_PENDING_WAIT_MS: u64 = 15_000;
@@ -685,31 +685,53 @@ impl CompactionManager {
     }
 
     /// Char budget for the verbatim tail compaction aims to preserve.
-    fn keep_tail_target_chars(&self) -> usize {
-        let keep_fraction = self.compaction_config.keep_fraction;
-        keep_tail_target_tokens(self.token_budget, keep_fraction).saturating_mul(CHARS_PER_TOKEN)
+    ///
+    /// `non_message_tokens` is everything that occupies context but is not the
+    /// kept tail: system prompt, tool definitions, and the summary standing in
+    /// for the compacted prefix. It is an additive constant that does not shrink
+    /// no matter how much conversation is dropped, so it is subtracted rather
+    /// than scaled against.
+    ///
+    /// Two bounds apply:
+    /// - keep `keep_fraction` of the space actually available for conversation,
+    ///   which is what makes the tail proportional to the window; and
+    /// - never let the whole request (overhead included) reach
+    ///   `ANTI_THRASH_CEILING`, or compaction would re-fire on its own output.
+    ///
+    /// When overhead alone approaches the ceiling, the second bound drives the
+    /// target to zero and only `min_keep_turns` survives. That is the honest
+    /// answer: such a window has no room left for conversation.
+    fn keep_tail_target_chars_from_overhead(&self, non_message_tokens: usize) -> usize {
+        let keep_fraction = self
+            .compaction_config
+            .keep_fraction
+            .clamp(0.0, MAX_KEEP_TAIL_FRACTION);
+        let budget = self.token_budget as f64;
+        let available = self.token_budget.saturating_sub(non_message_tokens) as f64;
+
+        let proportional = (available * keep_fraction as f64) as usize;
+        let anti_thrash_ceiling =
+            ((budget * ANTI_THRASH_CEILING as f64) as usize).saturating_sub(non_message_tokens);
+
+        proportional
+            .min(anti_thrash_ceiling)
+            .saturating_mul(CHARS_PER_TOKEN)
     }
 
-    /// Keep-tail char budget corrected for real context pressure.
+    /// Keep-tail char budget using the *measured* non-message overhead.
     ///
-    /// The cutoff is chosen by counting characters, but the authoritative
-    /// context size is what the provider reports. Those disagree whenever the
-    /// transcript holds content the char heuristic undercounts (images, cached
-    /// blocks, provider-side scaffolding). Without this correction a session
-    /// that the provider says is at 90% could still look tiny by char count, and
-    /// compaction would keep everything and never actually reclaim context.
-    ///
-    /// Scaling the char budget by `estimate / observed` converts the token-space
-    /// target into the char space the cutoff search actually works in.
+    /// The provider's reported input token count is the authoritative context
+    /// size. Subtracting the char-derived message estimate from it yields the
+    /// real cost of the system prompt and tool definitions, which is often far
+    /// larger than the `SYSTEM_OVERHEAD_TOKENS` guess. Measuring it matters: in
+    /// a live 32k-window session tools and system prompt alone cost ~25k, so a
+    /// tail sized against the raw budget could never fit.
     fn keep_tail_target_chars_with(&self, all_messages: &[Message]) -> usize {
-        let target = self.keep_tail_target_chars();
-        let estimated = self.token_estimate_with(all_messages);
+        let message_tokens = self.active_message_chars_with(all_messages) / CHARS_PER_TOKEN;
         let effective = self.effective_token_count_with(all_messages);
-        if estimated == 0 || effective <= estimated {
-            return target;
-        }
-        // effective > estimated: chars undercount reality, so shrink the budget.
-        ((target as u128 * estimated as u128) / effective as u128) as usize
+        let measured_overhead = effective.saturating_sub(message_tokens);
+        let overhead = measured_overhead.max(system_overhead_for_budget(self.token_budget));
+        self.keep_tail_target_chars_from_overhead(overhead)
     }
 
     /// The standard, budget-proportional compaction cutoff.
@@ -1550,48 +1572,43 @@ impl CompactionManager {
                 remaining_suffix_chars[idx + 1].saturating_add(active_char_counts[idx]);
         }
 
-        // Start from the same budget-proportional tail the background path
-        // uses, then shrink only as far as actually needed to fit. Starting at a
-        // fixed small turn count made every emergency compact drop the whole
-        // conversation even when a much larger tail would have fit comfortably.
-        let emergency_cutoff = keep_cutoff_for_char_budget(
-            active,
-            self.keep_tail_target_chars_with(all_messages),
-            self.min_keep_turns(),
-        );
-        // Small budgets charge no system overhead, so the keep target can equal
-        // the whole budget; never aim above the budget itself. Expressed in the
-        // same char-derived token space the suffix sums use, so an observed
-        // token count that exceeds the char estimate tightens the target.
-        let fit_target_tokens = (self.keep_tail_target_chars_with(all_messages) / CHARS_PER_TOKEN)
+        // Start from the same budget-proportional tail the background path uses.
+        // Starting at a fixed small turn count made every emergency compact drop
+        // the whole conversation even when a much larger tail would have fit.
+        let target_chars = self.keep_tail_target_chars_with(all_messages);
+        // The suffix sums are char-derived message tokens, so compare against
+        // the message-token target rather than the whole budget. Fitting to the
+        // raw budget would leave the transcript at 100% of the window and trip
+        // the critical threshold again on the very next turn.
+        let fit_target_tokens = (target_chars / CHARS_PER_TOKEN)
             .max(1)
             .min(self.token_budget);
-        let mut turns_to_keep = active
-            .len()
-            .saturating_sub(emergency_cutoff)
-            .max(MIN_TURNS_TO_KEEP)
-            .min(active.len().saturating_sub(1));
-        let mut cutoff;
-        loop {
-            cutoff = active.len().saturating_sub(turns_to_keep);
-            cutoff = safe_compaction_cutoff(active, cutoff);
 
-            if cutoff > 0 {
-                let remaining_tokens = remaining_suffix_chars[cutoff] / CHARS_PER_TOKEN;
-                // Fit to the keep target, not the raw budget: leaving the
-                // transcript at 100% of budget would trip the critical
-                // threshold again on the very next turn.
-                if remaining_tokens <= fit_target_tokens {
-                    break;
-                }
-            }
+        let fits = |cutoff: usize| {
+            cutoff > 0 && remaining_suffix_chars[cutoff] / CHARS_PER_TOKEN <= fit_target_tokens
+        };
 
-            if turns_to_keep <= MIN_TURNS_TO_KEEP {
-                cutoff = active.len().saturating_sub(MIN_TURNS_TO_KEEP);
-                cutoff = safe_compaction_cutoff(active, cutoff);
-                break;
-            }
-            turns_to_keep = (turns_to_keep / 2).max(MIN_TURNS_TO_KEEP);
+        // Greedy fit, floored at `min_keep_turns`. If that still does not fit,
+        // re-fit with only the absolute minimum floor, which yields the largest
+        // tail that genuinely fits. The previous fallback halved the kept turns
+        // (10 -> 5 -> 2) and routinely landed on 2 when 8 would have fit: a live
+        // 70k-window session dropped 16 of 18 messages, down to 2.2% of context.
+        let mut cutoff = safe_compaction_cutoff(
+            active,
+            keep_cutoff_for_char_budget(active, target_chars, self.min_keep_turns()),
+        );
+
+        if !fits(cutoff) {
+            cutoff = safe_compaction_cutoff(
+                active,
+                keep_cutoff_for_char_budget(active, target_chars, MIN_TURNS_TO_KEEP),
+            );
+        }
+
+        // Last resort: even the minimum tail is over target because a single
+        // message is enormous. Keep the floor so the request can be made at all.
+        if !fits(cutoff) {
+            cutoff = safe_compaction_cutoff(active, active.len().saturating_sub(MIN_TURNS_TO_KEEP));
         }
 
         if cutoff == 0 {
