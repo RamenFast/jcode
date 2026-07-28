@@ -1486,3 +1486,80 @@ fn hard_compact_finds_largest_fitting_tail_not_halved_floor() {
         "kept tail {kept_tokens} must still fit the {budget} window"
     );
 }
+
+/// (l) End-to-end proof at Ben's actual window size.
+///
+/// Every live verification used a pinned small context window, because a real
+/// 1M-token session takes hours to reach the trigger. This test closes that gap
+/// by driving the full hard-compact path at 1M with realistic overhead and
+/// asserting on the same numbers the `[compaction/outcome]` log line reports.
+///
+/// It guards exactly what Ben saw in his logs:
+/// `pre_tokens=1048885 post_tokens=20217 messages_dropped=3115`. With the old
+/// fixed-tail cutoff restored this test reproduces that symptom (kept=10,
+/// R=0.003) and fails.
+#[test]
+fn one_million_window_end_to_end_keeps_large_tail() {
+    let budget = 1_000_000usize;
+    let messages = make_transcript(950_000, 300);
+    let mut manager = manager_with_budget(budget);
+    // Provider reports the real size, including system prompt + tools.
+    manager.update_observed_input_tokens(1_010_000);
+
+    let pre_active = messages.len();
+    let dropped = manager.hard_compact_with(&messages).expect("hard compact");
+    let kept = pre_active - dropped;
+    let kept_tokens: usize = messages[dropped..]
+        .iter()
+        .map(message_char_count)
+        .sum::<usize>()
+        / CHARS_PER_TOKEN;
+    let r = kept_tokens as f32 / budget as f32;
+
+    println!(
+        "1M end-to-end: pre_msgs={pre_active} dropped={dropped} kept={kept} \
+         kept_tokens={kept_tokens} R={r:.3}"
+    );
+
+    assert!(
+        kept > 100,
+        "kept only {kept} of {pre_active} messages at a 1M budget; \
+         this is the RECENT_TURNS_TO_KEEP collapse regressing"
+    );
+    assert!(
+        r > 0.25,
+        "retention {r:.3} at a 1M budget is back in amnesia territory"
+    );
+    assert!(
+        r < COMPACTION_THRESHOLD,
+        "retention {r:.3} would re-trigger compaction immediately"
+    );
+}
+
+/// (m) Compaction must settle: after it runs, the manager must no longer want
+/// to compact. This is the end-to-end form of the anti-thrash invariant,
+/// exercised through the real trigger rather than by inspecting a cutoff.
+///
+/// Verified to fail if both the `keep_fraction` clamp and `ANTI_THRASH_CEILING`
+/// are removed, which is the configuration that would thrash.
+#[test]
+fn compaction_settles_and_does_not_immediately_refire() {
+    for budget in [200_000usize, 1_000_000] {
+        let messages = make_transcript((budget as f32 * 0.9) as usize, 2_000);
+        let mut manager = manager_with_budget(budget);
+        manager.update_observed_input_tokens((budget as f64 * 0.96) as u64);
+
+        assert!(
+            manager.should_compact_with(&messages),
+            "budget {budget}: a 96%-full context should want to compact"
+        );
+
+        manager.hard_compact_with(&messages).expect("hard compact");
+
+        assert!(
+            !manager.should_compact_with(&messages),
+            "budget {budget}: compaction did not settle; it wants to compact again \
+             immediately, which is the thrash loop"
+        );
+    }
+}
