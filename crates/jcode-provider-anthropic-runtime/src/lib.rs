@@ -15,6 +15,9 @@
 //! Uses the Anthropic Messages API directly without the Python SDK.
 //! This provides better control and eliminates the Python dependency.
 
+use account_rotation::{
+    account_rotation_enabled, anthropic_account_count, rotate_to_next_anthropic_account,
+};
 use jcode_base::auth;
 use jcode_base::auth::oauth;
 use jcode_provider_core::{EventStream, NativeToolResultSender, Provider};
@@ -1468,7 +1471,24 @@ async fn run_stream_with_retries(
     // model only falls back to genuinely new candidates.
     let mut tried_models: Vec<String> = vec![original_model.clone()];
 
-    for attempt in 0..MAX_RETRIES {
+    // Track every OAuth account already attempted for this request so a
+    // rate-limit rotation walks each stored account at most once. Seeded with
+    // the account that built the request.
+    let mut tried_account_labels: Vec<String> =
+        auth::claude::active_account_label().into_iter().collect();
+
+    // Rotating to another Anthropic account costs one loop iteration, so widen
+    // the budget by the number of alternate accounts. Without this, a 429 on
+    // the first account would eat the transient-fault retries that the account
+    // we rotate *to* still needs.
+    let alternate_account_attempts = if is_oauth && account_rotation_enabled() {
+        anthropic_account_count().saturating_sub(1) as u32
+    } else {
+        0
+    };
+    let max_attempts = MAX_RETRIES + alternate_account_attempts;
+
+    for attempt in 0..max_attempts {
         if attempt > 0 {
             // Exponential backoff with jitter: ~1s, ~2s, ~4s
             let delay = jcode_provider_core::retry_after::retry_delay(
@@ -1480,7 +1500,7 @@ async fn run_stream_with_retries(
                 .send(Ok(StreamEvent::ConnectionPhase {
                     phase: jcode_message_types::ConnectionPhase::Retrying {
                         attempt: attempt + 1,
-                        max: MAX_RETRIES,
+                        max: max_attempts,
                     },
                 }))
                 .await;
@@ -1488,7 +1508,7 @@ async fn run_stream_with_retries(
             jcode_base::logging::info(&format!(
                 "Retrying Anthropic API request (attempt {}/{})",
                 attempt + 1,
-                MAX_RETRIES
+                max_attempts
             ));
         }
 
@@ -1628,8 +1648,63 @@ async fn run_stream_with_retries(
                     continue;
                 }
 
+                // Rate limited on this OAuth account. Anthropic delivers the 429
+                // *inside* the response stream, which was already handed to the
+                // caller, so neither the cross-provider fallback chain nor
+                // `try_same_provider_account_failover` can ever see it — both
+                // only guard the synchronous stream-establishment call. Walking
+                // the other stored accounts here is the only place a second
+                // subscription can rescue the in-flight turn.
+                // Captured before the rotation call, which appends the account it
+                // moves to, so the log names the account that actually hit the
+                // limit even on a second rotation.
+                let limited_label = tried_account_labels
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| "default".to_string());
+                let rotation =
+                    if is_oauth && is_rate_limit_error(&error_str) && account_rotation_enabled() {
+                        rotate_to_next_anthropic_account(&mut tried_account_labels, &credentials)
+                            .await
+                    } else {
+                        None
+                    };
+                if let Some((rotated_label, rotated_token)) = rotation {
+                    jcode_base::logging::warn(&format!(
+                        "Anthropic account '{}' is rate limited ({}); rotating to account '{}'",
+                        limited_label, e, rotated_label
+                    ));
+                    if saw_output {
+                        // Partial output already reached the consumer; ask it to
+                        // discard the partial attempt so the replay from the new
+                        // account does not duplicate text.
+                        let _ = tx
+                            .send(Ok(StreamEvent::RetryRollback {
+                                attempt: attempt + 2,
+                                max: max_attempts,
+                            }))
+                            .await;
+                    }
+                    // Surface the switch: a silent account change would make the
+                    // usage numbers in `/usage` inexplicable to the user.
+                    let _ = tx
+                        .send(Ok(StreamEvent::StatusDetail {
+                            detail: format!(
+                                "⚡ Rate limited; switched to Anthropic account '{}'",
+                                rotated_label
+                            ),
+                        }))
+                        .await;
+                    token = rotated_token;
+                    // A fresh account has its own limit window, so do not carry
+                    // the previous account's Retry-After into the backoff.
+                    next_retry_delay = None;
+                    last_error = Some(e);
+                    continue;
+                }
+
                 // Check if this is a transient/retryable error
-                if is_retryable_error(&error_str) && attempt + 1 < MAX_RETRIES {
+                if is_retryable_error(&error_str) && attempt + 1 < max_attempts {
                     if saw_output {
                         // The fault hit mid-stream after partial output reached
                         // the consumer. Tell it to discard the partial attempt
@@ -1642,7 +1717,7 @@ async fn run_stream_with_retries(
                         let _ = tx
                             .send(Ok(StreamEvent::RetryRollback {
                                 attempt: attempt + 2,
-                                max: MAX_RETRIES,
+                                max: max_attempts,
                             }))
                             .await;
                     } else {
@@ -1674,7 +1749,7 @@ async fn run_stream_with_retries(
         let _ = tx
             .send(Err(anyhow::anyhow!(
                 "Failed after {} retries: {}",
-                MAX_RETRIES,
+                max_attempts,
                 e
             )))
             .await;
@@ -1915,6 +1990,20 @@ fn is_retryable_error(error_str: &str) -> bool {
         // API-level server errors (SSE error events)
         || error_str.contains("api_error")
         || error_str.contains("internal server error")
+}
+
+/// Detect an Anthropic rate-limit rejection — a subscription window that is
+/// spent, or a burst/concurrency limit — as distinct from the broader transient
+/// error class, which is retried against the *same* account.
+///
+/// A rate limit is the one failure another account can actually fix, so it gets
+/// its own classifier and rotates before any same-account retry is spent.
+/// `error_str` is expected to already be lowercased.
+fn is_rate_limit_error(error_str: &str) -> bool {
+    error_str.contains("429 too many requests")
+        || error_str.contains("rate_limit_error")
+        || error_str.contains("rate limit")
+        || error_str.contains("rate_limit")
 }
 
 /// Detect an Anthropic "model not found" rejection.
@@ -2354,6 +2443,7 @@ fn add_message_cache_breakpoint(messages: &mut [ApiMessage]) {
     jcode_provider_anthropic::add_message_cache_breakpoint(messages, is_cache_ttl_1h())
 }
 
+mod account_rotation;
 mod sse_types;
 use sse_types::{
     ApiContentBlockStart, ApiDelta, ContentBlockDeltaEvent, ContentBlockStartEvent,

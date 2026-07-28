@@ -1,7 +1,7 @@
 {
-  "total": 3180,
+  "total": 3179,
   "totals_by_pattern": {
-    "dot_ok": 1163,
+    "dot_ok": 1162,
     "let_underscore": 1183,
     "unwrap_or_default": 834
   },
@@ -647,7 +647,7 @@
       "unwrap_or_default": 1
     },
     "crates/jcode-base/src/background.rs": {
-      "dot_ok": 14,
+      "dot_ok": 12,
       "let_underscore": 17,
       "unwrap_or_default": 9
     },
@@ -1446,9 +1446,14 @@
       "let_underscore": 0,
       "unwrap_or_default": 0
     },
+    "crates/jcode-provider-anthropic-runtime/src/account_rotation.rs": {
+      "dot_ok": 1,
+      "let_underscore": 0,
+      "unwrap_or_default": 0
+    },
     "crates/jcode-provider-anthropic-runtime/src/lib.rs": {
       "dot_ok": 4,
-      "let_underscore": 14,
+      "let_underscore": 16,
       "unwrap_or_default": 1
     },
     "crates/jcode-provider-anthropic/src/lib.rs": {
@@ -2393,7 +2398,7 @@
     },
     "src/cli/terminal.rs": {
       "dot_ok": 2,
-      "let_underscore": 10,
+      "let_underscore": 8,
       "unwrap_or_default": 0
     },
     "src/cli/tui_launch.rs": {

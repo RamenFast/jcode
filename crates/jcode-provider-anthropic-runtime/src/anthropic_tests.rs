@@ -1673,6 +1673,49 @@ fn test_anthropic_fable_5_sends_reasoning_fields() {
 }
 
 #[test]
+fn detects_anthropic_rate_limit_errors() {
+    // The real 429 body that ended Ben's turns instead of rotating accounts.
+    let real = "anthropic api error (429 too many requests): {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"this request would exceed your account's rate limit. please try again later.\"}}";
+    assert!(is_rate_limit_error(real));
+
+    // Structural markers alone.
+    assert!(is_rate_limit_error("429 too many requests"));
+    assert!(is_rate_limit_error("rate_limit_error"));
+    assert!(is_rate_limit_error("upstream rate limit reached"));
+
+    // Failures another account cannot fix must NOT rotate: rotating on these
+    // would burn the healthy account's retry budget on a doomed request.
+    assert!(!is_rate_limit_error(
+        "anthropic api error (401 unauthorized): invalid authentication credentials"
+    ));
+    assert!(!is_rate_limit_error(
+        "anthropic api error (404 not found): {\"type\":\"not_found_error\",\"message\":\"model not found\"}"
+    ));
+    assert!(!is_rate_limit_error(
+        "anthropic api error (500 internal server error): overloaded"
+    ));
+    assert!(!is_rate_limit_error(
+        "anthropic api error (400 bad request): max_tokens too large"
+    ));
+}
+
+#[test]
+fn rate_limit_errors_are_a_subset_of_retryable_errors() {
+    // The rotation branch is checked before the generic transient-retry branch
+    // and `continue`s past it. If a rate limit were ever NOT retryable, an
+    // exhausted rotation would have to fall through to a hard failure rather
+    // than a same-account retry -- keep the two classifiers consistent.
+    for error in [
+        "anthropic api error (429 too many requests): rate_limit_error",
+        "429 too many requests",
+        "rate limit exceeded",
+    ] {
+        assert!(is_rate_limit_error(error), "not a rate limit: {error}");
+        assert!(is_retryable_error(error), "not retryable: {error}");
+    }
+}
+
+#[test]
 fn detects_anthropic_reasoning_unsupported_errors() {
     // The real 400 bodies returned when Fable 5 is sent reasoning fields.
     let thinking_400 = "anthropic api error (400 bad request): {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"adaptive thinking is not supported on this model\"}}";
@@ -1850,4 +1893,135 @@ fn ping_keepalive_emits_streaming_phase_event() {
         )),
         "expected ping to emit a Streaming ConnectionPhase event, got {events:?}"
     );
+}
+
+/// Write a two-account `auth.json` into a sandboxed `JCODE_HOME`.
+///
+/// Both tokens are given a far-future expiry so rotation uses the stored access
+/// token directly and never reaches the network refresh path.
+fn write_two_account_auth_fixture(home: &std::path::Path) {
+    std::fs::write(
+        home.join("auth.json"),
+        r#"{
+            "anthropic_accounts": [
+                {
+                    "label": "Anthropic0auth1",
+                    "access": "acc_one",
+                    "refresh": "ref_one",
+                    "expires": 99999999999999,
+                    "email": "one@example.com"
+                },
+                {
+                    "label": "Anthropic0auth2",
+                    "access": "acc_two",
+                    "refresh": "ref_two",
+                    "expires": 99999999999999,
+                    "email": "two@example.com"
+                }
+            ],
+            "active_anthropic_account": "Anthropic0auth1"
+        }"#,
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn rate_limit_rotation_walks_to_the_second_account_then_stops() {
+    let _lock = jcode_base::storage::lock_test_env();
+    let temp = tempfile::TempDir::new().unwrap();
+    let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
+    jcode_base::auth::claude::set_active_account_override(None);
+    write_two_account_auth_fixture(temp.path());
+
+    let credentials = Arc::new(RwLock::new(None));
+    // Seeded the way `run_stream_with_retries` seeds it: the account that built
+    // the request has already been tried.
+    let mut tried = vec!["Anthropic0auth1".to_string()];
+
+    let rotated =
+        crate::account_rotation::rotate_to_next_anthropic_account(&mut tried, &credentials).await;
+
+    // The limited account must be skipped and the untried one selected.
+    assert_eq!(
+        rotated,
+        Some(("Anthropic0auth2".to_string(), "acc_two".to_string())),
+        "rotation should move to the second stored account"
+    );
+    assert_eq!(tried, vec!["Anthropic0auth1", "Anthropic0auth2"]);
+
+    // The rest of the process must follow the account now serving traffic,
+    // otherwise the next turn goes straight back to the rate-limited one.
+    assert_eq!(
+        jcode_base::auth::claude::active_account_label(),
+        Some("Anthropic0auth2".to_string())
+    );
+    let cached = credentials.read().await;
+    assert_eq!(cached.as_ref().unwrap().access_token, "acc_two");
+    drop(cached);
+
+    // With every account tried, rotation must give up so the caller falls
+    // through to the normal retry/failure handling instead of looping forever.
+    let exhausted =
+        crate::account_rotation::rotate_to_next_anthropic_account(&mut tried, &credentials).await;
+    assert_eq!(exhausted, None, "no untried account should remain");
+
+    jcode_base::auth::claude::set_active_account_override(None);
+}
+
+#[tokio::test]
+async fn rate_limit_rotation_skips_an_account_it_cannot_authenticate() {
+    let _lock = jcode_base::storage::lock_test_env();
+    let temp = tempfile::TempDir::new().unwrap();
+    let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
+    jcode_base::auth::claude::set_active_account_override(None);
+
+    // Middle account is unusable offline: its token is long expired and it has
+    // no refresh token, so it must be skipped rather than returned (which would
+    // trade the 429 for a 401) and rather than attempting a network refresh.
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{
+            "anthropic_accounts": [
+                {
+                    "label": "Anthropic0auth1",
+                    "access": "acc_one",
+                    "refresh": "ref_one",
+                    "expires": 99999999999999
+                },
+                {
+                    "label": "Anthropic0auth2",
+                    "access": "acc_expired",
+                    "refresh": "",
+                    "expires": 1
+                },
+                {
+                    "label": "Anthropic0auth3",
+                    "access": "acc_three",
+                    "refresh": "ref_three",
+                    "expires": 99999999999999
+                }
+            ],
+            "active_anthropic_account": "Anthropic0auth1"
+        }"#,
+    )
+    .unwrap();
+
+    let credentials = Arc::new(RwLock::new(None));
+    let mut tried = vec!["Anthropic0auth1".to_string()];
+
+    let rotated =
+        crate::account_rotation::rotate_to_next_anthropic_account(&mut tried, &credentials).await;
+
+    assert_eq!(
+        rotated,
+        Some(("Anthropic0auth3".to_string(), "acc_three".to_string())),
+        "rotation should skip the unusable account and land on the next healthy one"
+    );
+    // The skipped account is still recorded, so it is not retried later.
+    assert_eq!(
+        tried,
+        vec!["Anthropic0auth1", "Anthropic0auth2", "Anthropic0auth3"]
+    );
+
+    jcode_base::auth::claude::set_active_account_override(None);
 }
