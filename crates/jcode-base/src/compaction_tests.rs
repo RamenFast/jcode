@@ -1563,3 +1563,101 @@ fn compaction_settles_and_does_not_immediately_refire() {
         );
     }
 }
+
+/// (n) All three compaction modes share the budget-proportional cutoff, but
+/// only reactive had coverage. Semantic and proactive route through
+/// `standard_cutoff_with` too, so a regression there would silently make those
+/// modes aggressive again while the reactive tests stayed green.
+///
+/// Semantic mode may only ever move the cutoff *earlier* (keeping more), never
+/// later, because it pulls high-relevance messages out of the summarize set.
+#[test]
+fn all_modes_keep_a_budget_proportional_tail() {
+    use crate::config::CompactionMode;
+
+    // Semantic mode embeds every candidate message, so keep the transcript
+    // small enough that this stays a fast unit test. 200k still exercises the
+    // budget-proportional path (the old code kept a flat 10 here).
+    let budget = 200_000usize;
+    // 3k-token messages: the correct tail keeps ~26 here, while the old fixed
+    // RECENT_TURNS_TO_KEEP cutoff would keep exactly 10. The two are clearly
+    // distinguishable, so this test fails loudly if a mode regresses.
+    let messages = make_transcript(160_000, 3_000);
+
+    let reactive_kept = {
+        let m = manager_with_budget(budget);
+        messages.len() - m.standard_cutoff(&messages)
+    };
+
+    for mode in [
+        CompactionMode::Reactive,
+        CompactionMode::Proactive,
+        CompactionMode::Semantic,
+    ] {
+        let mut manager = manager_with_budget(budget);
+        let mut cfg = crate::config::CompactionConfig::default();
+        cfg.mode = mode.clone();
+        manager.set_compaction_config(cfg);
+
+        let cutoff = match mode {
+            CompactionMode::Semantic => manager.semantic_cutoff(&messages, &messages),
+            _ => manager.standard_cutoff_with(&messages, &messages),
+        };
+        let kept = messages.len() - cutoff;
+        let kept_tokens: usize = messages[cutoff..]
+            .iter()
+            .map(message_char_count)
+            .sum::<usize>()
+            / CHARS_PER_TOKEN;
+        let r = kept_tokens as f32 / budget as f32;
+
+        println!("mode={mode:?} kept={kept} kept_tokens={kept_tokens} R={r:.3}");
+
+        assert!(
+            kept > RECENT_TURNS_TO_KEEP,
+            "{mode:?} kept only {kept} messages at a {budget} budget; \
+             the old fixed-tail cutoff would keep {RECENT_TURNS_TO_KEEP}, so this \
+             mode is not using the budget-proportional tail"
+        );
+        // Semantic keeps >= reactive by construction; it never compacts more.
+        assert!(
+            kept >= reactive_kept,
+            "{mode:?} kept {kept} but reactive kept {reactive_kept}; \
+             no mode may be more aggressive than the standard cutoff"
+        );
+        assert!(
+            r < COMPACTION_THRESHOLD,
+            "{mode:?} retention {r:.3} would re-trigger compaction immediately"
+        );
+    }
+}
+
+/// (o) The manual `/compact` path is the one users invoke deliberately. It must
+/// reclaim more than the automatic tail (that is the point of asking), while
+/// still keeping far more than the old 10-message stub.
+#[test]
+fn manual_compact_is_stronger_than_automatic_but_not_amnesia() {
+    let budget = 1_000_000usize;
+    let messages = make_transcript(800_000, 2_000);
+    let manager = manager_with_budget(budget);
+
+    let auto_kept = messages.len() - manager.standard_cutoff(&messages);
+    let manual_cutoff = safe_compaction_cutoff(
+        &messages,
+        keep_cutoff_for_char_budget(
+            &messages,
+            manager.keep_tail_target_chars_with(&messages) / 2,
+            manager.min_keep_turns(),
+        ),
+    );
+    let manual_kept = messages.len() - manual_cutoff;
+
+    assert!(
+        manual_kept < auto_kept,
+        "manual compact ({manual_kept}) should reclaim more than automatic ({auto_kept})"
+    );
+    assert!(
+        manual_kept > 50,
+        "manual compact kept only {manual_kept} messages; that is the old stub behaviour"
+    );
+}
