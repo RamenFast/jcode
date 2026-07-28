@@ -372,6 +372,20 @@ pub struct CompactionConfig {
 
     /// [semantic] Number of recent turns to look at for building the "current goal" embedding
     pub goal_window_turns: usize,
+
+    /// Fraction of the usable context budget to leave intact as verbatim recent
+    /// conversation when compaction fires (0.0-0.6).
+    ///
+    /// This is the main "how aggressive is compaction" dial. Lower values
+    /// reclaim more context but discard more of the conversation; higher values
+    /// keep more history at the cost of compacting again sooner. Values above
+    /// `MAX_KEEP_TAIL_FRACTION` are clamped, because a tail at or above the
+    /// trigger threshold would make compaction re-fire on its own output.
+    pub keep_fraction: f32,
+
+    /// Absolute minimum number of recent messages kept verbatim, regardless of
+    /// `keep_fraction`. Guarantees a usable tail when recent turns are huge.
+    pub min_keep_turns: usize,
 }
 
 impl Default for CompactionConfig {
@@ -387,6 +401,8 @@ impl Default for CompactionConfig {
             topic_shift_threshold: 0.45,
             relevance_keep_threshold: 0.65,
             goal_window_turns: 5,
+            keep_fraction: 0.45,
+            min_keep_turns: 10,
         }
     }
 }
@@ -1615,4 +1631,42 @@ pub struct LaunchHotkeysConfig {
     /// Set true once auto-import has populated `entries`, so we only bake the
     /// per-repo mapping a single time and never clobber later user edits.
     pub imported: bool,
+}
+
+#[cfg(test)]
+mod compaction_config_tests {
+    use super::CompactionConfig;
+
+    /// Existing configs predate `keep_fraction`/`min_keep_turns`; they must load
+    /// with sane defaults rather than failing or zeroing the keep tail.
+    #[test]
+    fn legacy_config_without_keep_keys_gets_defaults() {
+        let legacy = r#"
+mode = "reactive"
+lookahead_turns = 15
+min_turns_between_compactions = 10
+"#;
+        let cfg: CompactionConfig = toml::from_str(legacy).expect("legacy config must load");
+        assert_eq!(cfg.keep_fraction, 0.45);
+        assert_eq!(cfg.min_keep_turns, 10);
+    }
+
+    /// The new dials round-trip through TOML.
+    #[test]
+    fn keep_tuning_round_trips_through_toml() {
+        let mut cfg = CompactionConfig::default();
+        cfg.keep_fraction = 0.55;
+        cfg.min_keep_turns = 20;
+
+        let text = toml::to_string(&cfg).expect("serialize");
+        assert!(
+            text.contains("keep_fraction"),
+            "keep_fraction must be written out"
+        );
+        assert!(text.contains("min_keep_turns"));
+
+        let back: CompactionConfig = toml::from_str(&text).expect("deserialize");
+        assert_eq!(back.keep_fraction, 0.55);
+        assert_eq!(back.min_keep_turns, 20);
+    }
 }

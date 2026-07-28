@@ -29,14 +29,16 @@ use tokio::task::JoinHandle;
 pub use jcode_compaction_core::{
     CHARS_PER_TOKEN, COMPACTION_THRESHOLD, CRITICAL_THRESHOLD, CompactionAction, CompactionEvent,
     CompactionStats, DEFAULT_TOKEN_BUDGET, EMBED_MAX_CHARS_PER_MSG, EMBEDDING_HISTORY_WINDOW,
-    EMERGENCY_IMAGE_MAX_CHARS, EMERGENCY_TOOL_RESULT_MAX_CHARS, MANUAL_COMPACT_MIN_THRESHOLD,
-    MIN_TURNS_TO_KEEP, PAYLOAD_IMAGE_CHAR_BUDGET, RECENT_TURNS_TO_KEEP,
-    SEMANTIC_EMBED_CACHE_CAPACITY, SUMMARY_PROMPT, SYSTEM_OVERHEAD_TOKENS, Summary,
-    TOKEN_HISTORY_WINDOW, build_compaction_prompt, build_emergency_summary_text,
-    compacted_summary_text_block, content_char_count, effective_context_tokens_from_usage,
-    emergency_strip_large_images, emergency_truncate_large_payloads, estimate_compaction_tokens,
-    is_request_payload_too_large_error, mean_embedding, message_char_count, safe_compaction_cutoff,
-    semantic_cache_key, semantic_goal_text, semantic_message_text, strip_large_images_in_contents,
+    EMERGENCY_IMAGE_MAX_CHARS, EMERGENCY_TOOL_RESULT_MAX_CHARS, KEEP_TAIL_FRACTION,
+    MANUAL_COMPACT_MIN_THRESHOLD, MAX_KEEP_TAIL_FRACTION, MIN_TURNS_TO_KEEP,
+    PAYLOAD_IMAGE_CHAR_BUDGET, RECENT_TURNS_TO_KEEP, SEMANTIC_EMBED_CACHE_CAPACITY, SUMMARY_PROMPT,
+    SYSTEM_OVERHEAD_TOKENS, Summary, TOKEN_HISTORY_WINDOW, build_compaction_prompt,
+    build_emergency_summary_text, compacted_summary_text_block, content_char_count,
+    effective_context_tokens_from_usage, emergency_strip_large_images,
+    emergency_truncate_large_payloads, estimate_compaction_tokens,
+    is_request_payload_too_large_error, keep_cutoff_for_char_budget, keep_tail_target_tokens,
+    mean_embedding, message_char_count, safe_compaction_cutoff, semantic_cache_key,
+    semantic_goal_text, semantic_message_text, strip_large_images_in_contents,
     summary_payload_char_count,
 };
 
@@ -610,10 +612,10 @@ impl CompactionManager {
     /// Messages above `relevance_keep_threshold` anywhere in the history are
     /// pulled out of the summarize set. Falls back to the standard recency
     /// cutoff if embeddings fail.
-    fn semantic_cutoff(&mut self, active: &[Message]) -> usize {
+    fn semantic_cutoff(&mut self, active: &[Message], all_messages: &[Message]) -> usize {
         let goal_window_turns = self.compaction_config.goal_window_turns;
         let relevance_keep_threshold = self.compaction_config.relevance_keep_threshold;
-        let standard_cutoff = active.len().saturating_sub(RECENT_TURNS_TO_KEEP);
+        let standard_cutoff = self.standard_cutoff_with(active, all_messages);
         if standard_cutoff == 0 {
             return 0;
         }
@@ -672,6 +674,67 @@ impl CompactionManager {
         ));
 
         adjusted_cutoff
+    }
+
+    /// Number of recent messages that must survive every compaction.
+    ///
+    /// Acts as the floor beneath the budget-proportional tail: even if the
+    /// recent turns are individually enormous, this many stay verbatim.
+    fn min_keep_turns(&self) -> usize {
+        self.compaction_config.min_keep_turns.max(MIN_TURNS_TO_KEEP)
+    }
+
+    /// Char budget for the verbatim tail compaction aims to preserve.
+    fn keep_tail_target_chars(&self) -> usize {
+        let keep_fraction = self.compaction_config.keep_fraction;
+        keep_tail_target_tokens(self.token_budget, keep_fraction).saturating_mul(CHARS_PER_TOKEN)
+    }
+
+    /// Keep-tail char budget corrected for real context pressure.
+    ///
+    /// The cutoff is chosen by counting characters, but the authoritative
+    /// context size is what the provider reports. Those disagree whenever the
+    /// transcript holds content the char heuristic undercounts (images, cached
+    /// blocks, provider-side scaffolding). Without this correction a session
+    /// that the provider says is at 90% could still look tiny by char count, and
+    /// compaction would keep everything and never actually reclaim context.
+    ///
+    /// Scaling the char budget by `estimate / observed` converts the token-space
+    /// target into the char space the cutoff search actually works in.
+    fn keep_tail_target_chars_with(&self, all_messages: &[Message]) -> usize {
+        let target = self.keep_tail_target_chars();
+        let estimated = self.token_estimate_with(all_messages);
+        let effective = self.effective_token_count_with(all_messages);
+        if estimated == 0 || effective <= estimated {
+            return target;
+        }
+        // effective > estimated: chars undercount reality, so shrink the budget.
+        ((target as u128 * estimated as u128) / effective as u128) as usize
+    }
+
+    /// The standard, budget-proportional compaction cutoff.
+    ///
+    /// This replaces the old fixed `active.len() - RECENT_TURNS_TO_KEEP`
+    /// recency cutoff. That constant ignored the context budget entirely, so a
+    /// 1M-token window was cut down to the same ~10 messages as a 200k window —
+    /// a ~98% loss that read as the agent forgetting the task mid-flight. Sizing
+    /// the tail against the budget makes the cut proportional, while the
+    /// `min_keep_turns` floor preserves the old behaviour on small budgets.
+    ///
+    /// The result is already tool-pair safe.
+    fn standard_cutoff_with(&self, active: &[Message], all_messages: &[Message]) -> usize {
+        let cutoff = keep_cutoff_for_char_budget(
+            active,
+            self.keep_tail_target_chars_with(all_messages),
+            self.min_keep_turns(),
+        );
+        safe_compaction_cutoff(active, cutoff)
+    }
+
+    /// `standard_cutoff_with` for callers whose slice is the whole transcript.
+    #[cfg(test)]
+    fn standard_cutoff(&self, active: &[Message]) -> usize {
+        self.standard_cutoff_with(active, active)
     }
 
     /// Get the active (uncompacted) messages from a full message list.
@@ -841,17 +904,20 @@ impl CompactionManager {
             return false;
         }
         let active = self.active_messages(all_messages);
+        // A compaction is only worth starting if the budget-proportional tail
+        // would actually leave something behind to summarize.
+        let has_compactable_history = self.standard_cutoff_with(active, all_messages) > 0;
         match self.mode {
             CompactionMode::Reactive => {
                 self.pending_task.is_none()
                     && self.context_usage_with(all_messages) >= COMPACTION_THRESHOLD
-                    && active.len() > RECENT_TURNS_TO_KEEP
+                    && has_compactable_history
             }
             CompactionMode::Proactive => {
-                active.len() > RECENT_TURNS_TO_KEEP && self.should_compact_proactively(all_messages)
+                has_compactable_history && self.should_compact_proactively(all_messages)
             }
             CompactionMode::Semantic => {
-                active.len() > RECENT_TURNS_TO_KEEP && self.should_compact_semantic(all_messages)
+                has_compactable_history && self.should_compact_semantic(all_messages)
             }
         }
     }
@@ -869,10 +935,11 @@ impl CompactionManager {
         let active = self.active_messages(all_messages);
 
         // Calculate cutoff within active messages.
-        // Semantic mode uses relevance scoring; other modes use recency.
+        // Semantic mode uses relevance scoring; other modes use the standard
+        // budget-proportional recency tail.
         let mut cutoff = match self.mode {
-            crate::config::CompactionMode::Semantic => self.semantic_cutoff(active),
-            _ => active.len().saturating_sub(RECENT_TURNS_TO_KEEP),
+            crate::config::CompactionMode::Semantic => self.semantic_cutoff(active, all_messages),
+            _ => self.standard_cutoff_with(active, all_messages),
         };
         if cutoff == 0 {
             return;
@@ -1084,10 +1151,10 @@ impl CompactionManager {
 
         let active = self.active_messages(all_messages);
 
-        if active.len() <= RECENT_TURNS_TO_KEEP {
+        if active.len() <= self.min_keep_turns() {
             return Err(format!(
                 "Not enough messages to compact (need more than {}, have {})",
-                RECENT_TURNS_TO_KEEP,
+                self.min_keep_turns(),
                 active.len()
             ));
         }
@@ -1099,7 +1166,11 @@ impl CompactionManager {
             ));
         }
 
-        let mut cutoff = active.len().saturating_sub(RECENT_TURNS_TO_KEEP);
+        // Manual `/compact` is an explicit ask to reclaim context now, so it
+        // compacts harder than the automatic tail: half the normal keep budget.
+        let manual_target_chars = self.keep_tail_target_chars_with(all_messages) / 2;
+        let mut cutoff =
+            keep_cutoff_for_char_budget(active, manual_target_chars, self.min_keep_turns());
         if cutoff == 0 {
             return Err("No messages available to compact after keeping recent turns".to_string());
         }
@@ -1343,6 +1414,20 @@ impl CompactionManager {
         self.compaction_config.mode = mode;
     }
 
+    /// Replace the whole compaction tuning snapshot for this session.
+    ///
+    /// Used by callers that build a manager outside the global config (tests,
+    /// and any embedder that wants per-session compaction tuning).
+    pub fn set_compaction_config(&mut self, cfg: crate::config::CompactionConfig) {
+        self.mode = cfg.mode.clone();
+        self.compaction_config = cfg;
+    }
+
+    /// The active compaction tuning snapshot.
+    pub fn compaction_config(&self) -> &crate::config::CompactionConfig {
+        &self.compaction_config
+    }
+
     fn mode_trigger_label(&self) -> &'static str {
         self.mode.as_str()
     }
@@ -1465,7 +1550,27 @@ impl CompactionManager {
                 remaining_suffix_chars[idx + 1].saturating_add(active_char_counts[idx]);
         }
 
-        let mut turns_to_keep = RECENT_TURNS_TO_KEEP.min(active.len().saturating_sub(1));
+        // Start from the same budget-proportional tail the background path
+        // uses, then shrink only as far as actually needed to fit. Starting at a
+        // fixed small turn count made every emergency compact drop the whole
+        // conversation even when a much larger tail would have fit comfortably.
+        let emergency_cutoff = keep_cutoff_for_char_budget(
+            active,
+            self.keep_tail_target_chars_with(all_messages),
+            self.min_keep_turns(),
+        );
+        // Small budgets charge no system overhead, so the keep target can equal
+        // the whole budget; never aim above the budget itself. Expressed in the
+        // same char-derived token space the suffix sums use, so an observed
+        // token count that exceeds the char estimate tightens the target.
+        let fit_target_tokens = (self.keep_tail_target_chars_with(all_messages) / CHARS_PER_TOKEN)
+            .max(1)
+            .min(self.token_budget);
+        let mut turns_to_keep = active
+            .len()
+            .saturating_sub(emergency_cutoff)
+            .max(MIN_TURNS_TO_KEEP)
+            .min(active.len().saturating_sub(1));
         let mut cutoff;
         loop {
             cutoff = active.len().saturating_sub(turns_to_keep);
@@ -1473,7 +1578,10 @@ impl CompactionManager {
 
             if cutoff > 0 {
                 let remaining_tokens = remaining_suffix_chars[cutoff] / CHARS_PER_TOKEN;
-                if remaining_tokens <= self.token_budget {
+                // Fit to the keep target, not the raw budget: leaving the
+                // transcript at 100% of budget would trip the critical
+                // threshold again on the very next turn.
+                if remaining_tokens <= fit_target_tokens {
                     break;
                 }
             }

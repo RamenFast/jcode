@@ -18,6 +18,24 @@ pub const MANUAL_COMPACT_MIN_THRESHOLD: f32 = 0.10;
 /// Keep this many recent turns verbatim (not summarized)
 pub const RECENT_TURNS_TO_KEEP: usize = 10;
 
+/// Fraction of the usable context budget that compaction aims to leave behind
+/// as verbatim recent conversation.
+///
+/// Historically the kept tail was exactly `RECENT_TURNS_TO_KEEP` messages no
+/// matter how large the context window was. On a 1M-token budget that meant a
+/// compaction routinely went from ~800k tokens down to ~20k: a 98% cut that
+/// reads as the agent abruptly forgetting the task. Sizing the tail against the
+/// budget instead keeps compaction proportional — a bigger window keeps more —
+/// while still reclaiming enough headroom that the next turn fits comfortably.
+pub const KEEP_TAIL_FRACTION: f32 = 0.45;
+
+/// Hard ceiling on the configured keep fraction.
+///
+/// The kept tail must land below `COMPACTION_THRESHOLD` or compaction would
+/// immediately re-trigger on its own output (thrashing). This ceiling leaves
+/// clear air under the trigger even after system/tool overhead is added back.
+pub const MAX_KEEP_TAIL_FRACTION: f32 = 0.60;
+
 /// Absolute minimum turns to keep during emergency compaction
 pub const MIN_TURNS_TO_KEEP: usize = 2;
 
@@ -211,6 +229,67 @@ pub fn truncate_str_boundary(value: &str, max_bytes: usize) -> &str {
     &value[..end]
 }
 
+/// Fixed token overhead (system prompt + tool definitions) charged against a
+/// given budget.
+///
+/// Tiny budgets are only ever used by tests and by deliberately constrained
+/// models; charging the full real-world overhead there would swamp the budget
+/// entirely, so it is only applied once the budget is large enough to be a
+/// realistic context window.
+pub fn system_overhead_for_budget(token_budget: usize) -> usize {
+    if token_budget >= DEFAULT_TOKEN_BUDGET / 2 {
+        SYSTEM_OVERHEAD_TOKENS
+    } else {
+        0
+    }
+}
+
+/// How many tokens of recent conversation compaction should try to leave intact.
+///
+/// Measured against the *usable* budget (budget minus fixed overhead) so the
+/// post-compaction total, overhead included, still sits well under
+/// `COMPACTION_THRESHOLD`.
+pub fn keep_tail_target_tokens(token_budget: usize, keep_fraction: f32) -> usize {
+    let fraction = if keep_fraction.is_finite() {
+        keep_fraction.clamp(0.0, MAX_KEEP_TAIL_FRACTION)
+    } else {
+        KEEP_TAIL_FRACTION
+    };
+    let usable = token_budget.saturating_sub(system_overhead_for_budget(token_budget));
+    (usable as f64 * fraction as f64) as usize
+}
+
+/// Choose a compaction cutoff that keeps as much recent conversation as fits in
+/// `target_chars`, never keeping fewer than `min_turns_to_keep` messages.
+///
+/// Returns an index into `active`: messages before it are summarized, messages
+/// from it onward are kept verbatim. A return of `0` means everything already
+/// fits and there is nothing worth compacting.
+///
+/// The caller is responsible for passing the result through
+/// `safe_compaction_cutoff` so tool calls and their results stay together.
+pub fn keep_cutoff_for_char_budget(
+    active: &[Message],
+    target_chars: usize,
+    min_turns_to_keep: usize,
+) -> usize {
+    let mut kept_chars = 0usize;
+    let mut kept = 0usize;
+
+    for msg in active.iter().rev() {
+        let chars = message_char_count(msg);
+        // The floor wins over the budget: a few oversized recent turns must not
+        // starve the tail down to nothing.
+        if kept >= min_turns_to_keep && kept_chars.saturating_add(chars) > target_chars {
+            break;
+        }
+        kept_chars = kept_chars.saturating_add(chars);
+        kept += 1;
+    }
+
+    active.len().saturating_sub(kept)
+}
+
 pub fn mean_embedding(embeddings: &[&Vec<f32>], dim: usize) -> Vec<f32> {
     let mut mean = vec![0f32; dim];
     for emb in embeddings {
@@ -391,12 +470,7 @@ pub fn estimate_compaction_tokens_from_chars(total_chars: usize, token_budget: u
     // Add overhead for system prompt + tool definitions, which are not in the
     // message list but do count toward the context limit. Scale the overhead to
     // the budget so tests with tiny budgets aren't affected.
-    let overhead = if token_budget >= DEFAULT_TOKEN_BUDGET / 2 {
-        SYSTEM_OVERHEAD_TOKENS
-    } else {
-        0
-    };
-    msg_tokens + overhead
+    msg_tokens + system_overhead_for_budget(token_budget)
 }
 
 pub fn semantic_goal_text(messages: &[Message]) -> String {

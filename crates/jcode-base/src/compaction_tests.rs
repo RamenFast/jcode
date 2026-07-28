@@ -1105,3 +1105,281 @@ fn test_recover_within_budget_summary_line_variants() {
     assert!(line.contains("shortened 5 large tool result(s)"));
     assert!(!line.contains("dropped"));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Compaction aggression: how much conversation survives a compaction.
+//
+// Before these tests existed, the kept tail was the fixed constant
+// RECENT_TURNS_TO_KEEP (10 messages) regardless of context budget. On a 1M
+// budget that meant ~800k tokens -> ~20k tokens, a 98% loss, observed live in
+// ~/.jcode/logs. The tail is now sized against the budget. `retention_ratio_matrix`
+// is the climbable metric: it prints R = post_tokens / budget per cell.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Roughly `tokens` worth of message text (CHARS_PER_TOKEN chars per token).
+fn make_sized_message(role: Role, tokens: usize, tag: usize) -> Message {
+    let text = format!("[msg {tag}] {}", "x".repeat(tokens * CHARS_PER_TOKEN));
+    make_text_message(role, &text)
+}
+
+/// A transcript of alternating turns totalling about `total_tokens`.
+fn make_transcript(total_tokens: usize, tokens_per_msg: usize) -> Vec<Message> {
+    let count = (total_tokens / tokens_per_msg).max(1);
+    (0..count)
+        .map(|i| {
+            let role = if i % 2 == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            };
+            make_sized_message(role, tokens_per_msg, i)
+        })
+        .collect()
+}
+
+fn manager_with_budget(budget: usize) -> CompactionManager {
+    let mut manager = CompactionManager::new().with_budget(budget);
+    manager.set_compaction_config(crate::config::CompactionConfig::default());
+    manager
+}
+
+/// Tokens the transcript would occupy from `cutoff` onward, as compaction
+/// accounts for it (summary text replaces the compacted prefix).
+fn tokens_after_cutoff(messages: &[Message], cutoff: usize, budget: usize) -> usize {
+    let kept_chars: usize = messages[cutoff..].iter().map(message_char_count).sum();
+    jcode_compaction_core::estimate_compaction_tokens_from_chars(kept_chars, budget)
+}
+
+/// THE METRIC. Prints `budget | trigger | pre | post | R | kept_msgs` and
+/// asserts the retention ratio lands in the target band.
+#[test]
+fn retention_ratio_matrix() {
+    let budgets = [200_000usize, 400_000, 1_000_000];
+    println!(
+        "\n{:>10} | {:<9} | {:>9} | {:>9} | {:>6} | {:>9}",
+        "budget", "trigger", "pre", "post", "R", "kept_msgs"
+    );
+
+    for budget in budgets {
+        // A transcript sitting just past the compaction trigger.
+        let total = (budget as f32 * 0.85) as usize;
+        let messages = make_transcript(total, 2_000);
+        let manager = manager_with_budget(budget);
+        let pre = tokens_after_cutoff(&messages, 0, budget);
+
+        for trigger in ["reactive", "manual", "hard"] {
+            let cutoff = match trigger {
+                "reactive" => manager.standard_cutoff(&messages),
+                "manual" => safe_compaction_cutoff(
+                    &messages,
+                    keep_cutoff_for_char_budget(
+                        &messages,
+                        manager.keep_tail_target_chars() / 2,
+                        manager.min_keep_turns(),
+                    ),
+                ),
+                _ => {
+                    let mut m = manager_with_budget(budget);
+                    let dropped = m.hard_compact_with(&messages).expect("hard compact");
+                    dropped
+                }
+            };
+            let post = tokens_after_cutoff(&messages, cutoff, budget);
+            let kept = messages.len() - cutoff;
+            let r = post as f32 / budget as f32;
+            println!("{budget:>10} | {trigger:<9} | {pre:>9} | {post:>9} | {r:>6.3} | {kept:>9}");
+
+            assert!(
+                post < budget,
+                "{trigger} @ {budget}: post {post} must fit the budget"
+            );
+            let (lo, hi) = if trigger == "hard" {
+                (0.20f32, 0.55f32)
+            } else if trigger == "manual" {
+                // Manual compaction deliberately reclaims about twice as much.
+                (0.10f32, 0.40f32)
+            } else {
+                (0.30f32, 0.60f32)
+            };
+            assert!(
+                r >= lo && r <= hi,
+                "{trigger} @ budget {budget}: retention {r:.3} outside [{lo},{hi}] \
+                 (pre={pre} post={post} kept={kept}); compaction is too aggressive \
+                 if below, too timid if above"
+            );
+        }
+    }
+}
+
+/// (b) A bigger context window must keep proportionally more conversation.
+#[test]
+fn keep_tail_scales_with_budget() {
+    let small = 200_000usize;
+    let large = 1_000_000usize;
+    let messages = make_transcript(900_000, 2_000);
+
+    let small_post = {
+        let m = manager_with_budget(small);
+        tokens_after_cutoff(&messages, m.standard_cutoff(&messages), small)
+    };
+    let large_post = {
+        let m = manager_with_budget(large);
+        tokens_after_cutoff(&messages, m.standard_cutoff(&messages), large)
+    };
+
+    assert!(
+        large_post > small_post * 3,
+        "1M budget kept {large_post} tokens but 200k kept {small_post}; \
+         the tail must scale with the budget, not be a fixed message count"
+    );
+}
+
+/// (d) Compacting must not leave the transcript still over the trigger, or the
+/// next turn would immediately compact again (thrash).
+#[test]
+fn kept_tail_below_trigger_threshold() {
+    for budget in [200_000usize, 400_000, 1_000_000] {
+        let messages = make_transcript((budget as f32 * 0.9) as usize, 2_000);
+        let manager = manager_with_budget(budget);
+        let cutoff = manager.standard_cutoff(&messages);
+        let post = tokens_after_cutoff(&messages, cutoff, budget);
+        let r = post as f32 / budget as f32;
+        assert!(
+            r < COMPACTION_THRESHOLD,
+            "budget {budget}: post-compaction usage {r:.3} is still at/above the \
+             {COMPACTION_THRESHOLD} trigger, so compaction would fire again immediately"
+        );
+    }
+}
+
+/// (e) Tool calls and their results must stay together at the new, much larger
+/// kept tails.
+#[test]
+fn new_cutoff_preserves_tool_pairs() {
+    let mut messages = Vec::new();
+    for i in 0..200 {
+        let id = format!("tool_{i}");
+        messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: id.clone(),
+                name: "read".to_string(),
+                input: serde_json::json!({ "path": format!("f{i}") }),
+                thought_signature: None,
+            }],
+            timestamp: None,
+            tool_duration_ms: None,
+        });
+        messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: id,
+                content: "y".repeat(4_000),
+                is_error: Some(false),
+            }],
+            timestamp: None,
+            tool_duration_ms: None,
+        });
+    }
+
+    for budget in [200_000usize, 1_000_000] {
+        let manager = manager_with_budget(budget);
+        let cutoff = manager.standard_cutoff(&messages);
+        let mut seen_ids = std::collections::HashSet::new();
+        for msg in &messages[cutoff..] {
+            for block in &msg.content {
+                match block {
+                    ContentBlock::ToolUse { id, .. } => {
+                        seen_ids.insert(id.clone());
+                    }
+                    ContentBlock::ToolResult { tool_use_id, .. } => assert!(
+                        seen_ids.contains(tool_use_id),
+                        "budget {budget}: kept tool result {tool_use_id} lost its tool call \
+                         at cutoff {cutoff}"
+                    ),
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+/// (f) Tiny budgets must still behave like the old fixed-tail logic, so
+/// constrained models and existing tests are unaffected.
+#[test]
+fn min_keep_floor_preserves_legacy_behavior() {
+    let budget = 1_000usize;
+    let messages = make_transcript(10_000, 200);
+    let manager = manager_with_budget(budget);
+    let kept = messages.len() - manager.standard_cutoff(&messages);
+    assert!(
+        kept >= MIN_TURNS_TO_KEEP && kept <= RECENT_TURNS_TO_KEEP + 2,
+        "tiny budget kept {kept} messages; expected the legacy-sized floor"
+    );
+}
+
+/// (g) One tool result larger than the whole budget must still force the
+/// emergency descent to the minimum tail.
+#[test]
+fn hard_compact_descends_when_single_result_huge() {
+    let budget = 200_000usize;
+    let mut messages = make_transcript(50_000, 2_000);
+    messages.push(make_text_message(
+        Role::Assistant,
+        &"z".repeat(budget * CHARS_PER_TOKEN * 2),
+    ));
+    messages.push(make_text_message(Role::User, "and now continue"));
+
+    let mut manager = manager_with_budget(budget);
+    let cutoff = manager.hard_compact_with(&messages).expect("hard compact");
+    let kept = messages.len() - cutoff;
+    assert!(
+        kept <= RECENT_TURNS_TO_KEEP,
+        "a single over-budget message must still force a small tail, kept {kept}"
+    );
+}
+
+/// (h) The config dials actually move the cutoff.
+#[test]
+fn compaction_config_knobs_change_cutoff() {
+    let budget = 1_000_000usize;
+    let messages = make_transcript(800_000, 2_000);
+
+    let mut stingy = manager_with_budget(budget);
+    let mut cfg = crate::config::CompactionConfig::default();
+    cfg.keep_fraction = 0.10;
+    stingy.set_compaction_config(cfg);
+
+    let mut generous = manager_with_budget(budget);
+    let mut cfg = crate::config::CompactionConfig::default();
+    cfg.keep_fraction = 0.55;
+    generous.set_compaction_config(cfg);
+
+    let stingy_kept = messages.len() - stingy.standard_cutoff(&messages);
+    let generous_kept = messages.len() - generous.standard_cutoff(&messages);
+    assert!(
+        generous_kept > stingy_kept,
+        "keep_fraction had no effect: {generous_kept} vs {stingy_kept}"
+    );
+
+    // keep_fraction is clamped so a wild value can never park the transcript
+    // at or above the compaction trigger.
+    let mut wild = manager_with_budget(budget);
+    let mut cfg = crate::config::CompactionConfig::default();
+    cfg.keep_fraction = 5.0;
+    wild.set_compaction_config(cfg);
+    let post = tokens_after_cutoff(&messages, wild.standard_cutoff(&messages), budget);
+    assert!(
+        (post as f32 / budget as f32) < COMPACTION_THRESHOLD,
+        "an out-of-range keep_fraction must still be clamped below the trigger"
+    );
+
+    // min_keep_turns is a floor even when the fraction is ~0.
+    let mut floored = manager_with_budget(budget);
+    let mut cfg = crate::config::CompactionConfig::default();
+    cfg.keep_fraction = 0.0;
+    cfg.min_keep_turns = 25;
+    floored.set_compaction_config(cfg);
+    let kept = messages.len() - floored.standard_cutoff(&messages);
+    assert_eq!(kept, 25, "min_keep_turns floor not honoured");
+}
