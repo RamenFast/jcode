@@ -10,12 +10,27 @@ Compaction keeps a **tail** of recent messages untouched. The size of that tail 
 proportional to the context budget:
 
 ```
-keep_target_tokens = (token_budget - system_overhead) * keep_fraction
+available          = token_budget - non_message_tokens
+keep_target_tokens = min(
+    available * keep_fraction,                        # proportional to the window
+    token_budget * ANTI_THRASH_CEILING - non_message_tokens,  # never re-fire
+)
 ```
+
+`non_message_tokens` is everything that occupies context but is not the kept
+tail: the system prompt, the tool definitions, and the summary standing in for
+the compacted prefix. It is *measured* from the provider's reported input token
+count rather than guessed, because the guess is often badly wrong. In a live
+32k-window session the tools and system prompt alone cost about 25k, leaving
+only ~7k for conversation.
 
 Messages are kept from the end backwards until that budget is full, subject to a
 floor of `min_keep_turns` messages. The cutoff is then walked back further if
 necessary so a kept tool result never loses its tool call.
+
+When overhead alone approaches the ceiling, the target goes to zero and only the
+floor survives. That is the honest answer: such a window has no room left for
+conversation.
 
 Sizing against the budget matters because the tail used to be a fixed 10 messages
 regardless of window size. On a 1M-token model that meant a compaction went from
@@ -59,9 +74,15 @@ would immediately fire again on its own output.
 - **Manual** (`/compact`) is an explicit ask to reclaim context now, so it keeps
   half the normal tail.
 - **Emergency hard compact** fires at `CRITICAL_THRESHOLD` (95%) or after a
-  provider context-limit error. It starts from the same proportional tail and
-  shrinks only as far as needed to fit, halving down to `MIN_TURNS_TO_KEEP` (2)
-  in the worst case, so a single over-budget message can always be escaped.
+  provider context-limit error. It starts from the same proportional tail; if
+  that does not fit it re-fits greedily against the char budget to find the
+  largest tail that does, falling back to `MIN_TURNS_TO_KEEP` (2) only when a
+  single message exceeds the whole target.
+
+  This search must not halve. An earlier version stepped the kept turns
+  10 -> 5 -> 2, which can only land on a power-of-two division of the floor, so
+  whenever the best tail sat between two steps it overshot all the way down. A
+  live 70k-window session dropped 16 of 18 messages that way.
 
 ## Measuring it
 
