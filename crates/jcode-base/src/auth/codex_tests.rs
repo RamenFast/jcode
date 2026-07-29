@@ -222,9 +222,11 @@ fn multi_account_active_switch_works() {
     })
     .unwrap();
 
-    assert_eq!(active_account_label().as_deref(), Some("openai-1"));
-    set_active_account("openai-2").unwrap();
-    assert_eq!(active_account_label().as_deref(), Some("openai-2"));
+    // Custom labels are preserved rather than renamed to openai-<n> (see
+    // "feat(auth): preserve custom account labels").
+    assert_eq!(active_account_label().as_deref(), Some("personal"));
+    set_active_account("work").unwrap();
+    assert_eq!(active_account_label().as_deref(), Some("work"));
 
     let creds = load_credentials().unwrap();
     assert_eq!(creds.access_token, "at_work");

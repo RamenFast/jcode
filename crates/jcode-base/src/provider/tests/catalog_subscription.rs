@@ -196,9 +196,10 @@ fn test_same_provider_account_candidates_include_other_openai_accounts() {
         })
         .unwrap();
 
-        crate::auth::codex::set_active_account("openai-1").unwrap();
+        // Seeded labels are preserved, not renamed to openai-<n>.
+        crate::auth::codex::set_active_account("seed-a").unwrap();
         let candidates = MultiProvider::same_provider_account_candidates(ActiveProvider::OpenAI);
-        assert_eq!(candidates, vec!["openai-2".to_string()]);
+        assert_eq!(candidates, vec!["seed-b".to_string()]);
     });
 }
 

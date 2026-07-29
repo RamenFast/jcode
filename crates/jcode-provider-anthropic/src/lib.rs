@@ -1260,6 +1260,49 @@ mod empty_image_wire_tests {
         );
     }
 
+    /// The hazard the formatter comment warns about: with parallel tool calls,
+    /// every tool_result must stay contiguous in the next user message. If a
+    /// dropped image left its label behind as a sibling text block, it would
+    /// split the run and the API would report the later tool_use as missing its
+    /// tool_result.
+    #[test]
+    fn parallel_tool_results_stay_contiguous_when_an_image_is_dropped() {
+        let blocks = vec![
+            ContentBlock::ToolResult {
+                tool_use_id: "toolu_a".to_string(),
+                content: "Image: /tmp/editor.png (0 bytes)".to_string(),
+                is_error: None,
+            },
+            ContentBlock::Image {
+                media_type: "image/png".to_string(),
+                data: String::new(),
+            },
+            ContentBlock::Text {
+                text: "[Attached image associated with the preceding tool result: /tmp/editor.png]"
+                    .to_string(),
+                cache_control: None,
+            },
+            ContentBlock::ToolResult {
+                tool_use_id: "toolu_b".to_string(),
+                content: "second parallel call".to_string(),
+                is_error: None,
+            },
+        ];
+
+        let formatted = format_content_blocks(&blocks, false);
+
+        assert_eq!(formatted.len(), 2, "both tool results must survive");
+        assert!(
+            formatted
+                .iter()
+                .all(|b| matches!(b, ApiContentBlock::ToolResult { .. })),
+            "nothing may sit between the tool results"
+        );
+        let json = serde_json::to_string(&formatted).expect("serialize");
+        assert!(json.contains("toolu_a") && json.contains("toolu_b"));
+        assert!(!json.contains(r#""data":"""#));
+    }
+
     #[test]
     fn whitespace_only_payload_is_also_dropped() {
         let blocks = vec![ContentBlock::Image {

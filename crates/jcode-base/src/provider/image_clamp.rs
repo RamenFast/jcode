@@ -778,6 +778,27 @@ mod tests {
         }
     }
 
+    /// The clamp is the single chokepoint every provider shares, so stripping
+    /// unusable images here is what protects OpenAI (`data:<mime>;base64,<data>`)
+    /// and Gemini (`inline_data`) too, without a guard in each adapter.
+    #[test]
+    fn unusable_images_are_stripped_before_any_provider_formats_them() {
+        let messages = vec![poisoned_tool_result_message()];
+        let fixed = clamp_outbound_images(&messages).expect("empty image must be repaired");
+        // Whatever a provider adapter does with the blocks it receives, it can
+        // no longer receive an image block with an unusable payload.
+        for message in &fixed {
+            for block in &message.content {
+                if let ContentBlock::Image { data, .. } = block {
+                    assert!(
+                        !data.trim().is_empty(),
+                        "a provider adapter would embed an empty payload"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn valid_image_beside_an_empty_one_survives_byte_identical() {
         let good = encode_png(64, 64);
