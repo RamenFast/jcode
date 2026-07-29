@@ -191,6 +191,27 @@ fn tool_output_to_content_blocks_preserves_labeled_images() {
     }
 }
 
+/// A tool that reports an empty image must not produce an image block: an
+/// empty base64 payload is rejected by providers ("image cannot be empty")
+/// and, being persisted, would fail on every later turn.
+#[test]
+fn tool_output_to_content_blocks_omits_blank_images_and_their_labels() {
+    let output = ToolOutput::new("Capture failed").with_labeled_image(
+        "image/png",
+        "",
+        "screenshots/empty.png",
+    );
+
+    let blocks = tool_output_to_content_blocks("call_1".to_string(), output);
+
+    assert_eq!(
+        blocks.len(),
+        1,
+        "only the tool result should remain: {blocks:?}"
+    );
+    assert!(matches!(blocks[0], ContentBlock::ToolResult { .. }));
+}
+
 #[tokio::test]
 async fn run_turn_streaming_mpsc_emits_keepalive_while_provider_is_quiet() {
     let _guard = crate::storage::lock_test_env();

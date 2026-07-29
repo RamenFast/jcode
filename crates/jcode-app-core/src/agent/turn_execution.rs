@@ -64,6 +64,10 @@ impl Agent {
 
         let mut blocks: Vec<ContentBlock> = images
             .into_iter()
+            // A blank payload (e.g. a clipboard read that yielded nothing) is
+            // rejected by providers as "image cannot be empty", and since the
+            // message is persisted it would fail on every later turn too.
+            .filter(|(_, data)| !data.trim().is_empty())
             .map(|(media_type, data)| ContentBlock::Image { media_type, data })
             .collect();
         blocks.push(ContentBlock::Text {
