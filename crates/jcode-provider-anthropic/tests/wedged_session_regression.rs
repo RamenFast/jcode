@@ -46,57 +46,83 @@ fn wedged_session_block_sequence_serializes_without_an_empty_image() {
     );
 }
 
-/// End-to-end over the *real* journal file, when it is still present. This is
-/// the check that matters to a user staring at a wedged session: parse the
-/// recorded blocks straight out of the session journal, run them through the
-/// formatter, and assert the request no longer carries an empty image.
+/// Best-effort sweep over the machine's own session store.
+///
+/// Session files are live user state: they rotate, compact, and disappear, so
+/// this test never *requires* a poisoned session to exist. When one is present
+/// it proves the real recorded bytes no longer serialize an empty image; when
+/// none is present it simply has nothing to prove and passes. The hermetic test
+/// above is the actual regression pin.
 #[test]
-fn real_session_journal_no_longer_produces_an_empty_image() {
+fn recorded_sessions_never_serialize_an_empty_image() {
     let Some(home) = std::env::var_os("HOME") else {
         return;
     };
-    let path = std::path::Path::new(&home)
-        .join(".jcode/sessions")
-        .join("session_rabbit_1785214770012_f492451ded8d3f49.journal.jsonl");
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        // The journal is machine-local; skip when it is not available.
+    let dir = std::path::Path::new(&home).join(".jcode/sessions");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
         return;
     };
 
-    let mut empty_images_in_history = 0usize;
-    let mut checked_messages = 0usize;
-    for line in text.lines() {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        let Some(messages) = value.get("append_messages").and_then(|v| v.as_array()) else {
-            continue;
-        };
-        for message in messages {
-            let Some(content) = message.get("content") else {
-                continue;
-            };
-            let Ok(blocks) = serde_json::from_value::<Vec<ContentBlock>>(content.clone()) else {
-                continue;
-            };
-            empty_images_in_history += blocks
-                .iter()
-                .filter(|b| matches!(b, ContentBlock::Image { data, .. } if data.trim().is_empty()))
-                .count();
+    let mut poisoned_blocks_seen = 0usize;
+    let mut messages_checked = 0usize;
 
-            let json = serde_json::to_string(&format_content_blocks(&blocks, false))
-                .expect("serialize");
-            assert!(
-                !json.contains(r#""data":"""#),
-                "session journal still yields an empty image on the wire: {json}"
-            );
-            checked_messages += 1;
+    // Filter before bounding: the session directory holds thousands of files,
+    // so truncating the listing first would usually skip the very sessions this
+    // test exists to check.
+    let poisoned: Vec<(std::path::PathBuf, String)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let text = std::fs::read_to_string(&path).ok()?;
+            // Only sessions that actually recorded an empty image are
+            // interesting, and parsing every session would be needlessly slow.
+            text.contains(r#""data":"""#).then_some((path, text))
+        })
+        .collect();
+
+    for (path, text) in poisoned {
+        for value in text
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        {
+            // `.journal.jsonl` appends live under "append_messages"; the
+            // rolled-up `.json` store keeps the whole history in "messages".
+            let message_lists = ["append_messages", "messages"]
+                .into_iter()
+                .filter_map(|key| value.get(key))
+                .filter_map(|v| v.as_array());
+
+            for messages in message_lists {
+                for message in messages {
+                    let Some(content) = message.get("content") else {
+                        continue;
+                    };
+                    let Ok(blocks) = serde_json::from_value::<Vec<ContentBlock>>(content.clone())
+                    else {
+                        continue;
+                    };
+                    poisoned_blocks_seen += blocks
+                        .iter()
+                        .filter(|b| {
+                            matches!(b, ContentBlock::Image { data, .. } if data.trim().is_empty())
+                        })
+                        .count();
+
+                    let json = serde_json::to_string(&format_content_blocks(&blocks, false))
+                        .expect("serialize");
+                    assert!(
+                        !json.contains(r#""data":"""#),
+                        "recorded session {} still yields an empty image on the wire",
+                        path.display()
+                    );
+                    messages_checked += 1;
+                }
+            }
         }
     }
 
-    assert!(checked_messages > 0, "journal parsed no messages");
-    assert!(
-        empty_images_in_history > 0,
-        "expected the recorded poison block to still be present in history"
+    // Not an assertion, just a signal in the test log about what was covered.
+    println!(
+        "checked {messages_checked} recorded messages, {poisoned_blocks_seen} carrying an empty image"
     );
 }
