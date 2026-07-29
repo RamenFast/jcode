@@ -33,6 +33,21 @@
 //! cap (e.g. a large, high-detail PNG). When that happens we re-encode the
 //! image as JPEG and progressively downscale it until its base64 payload fits
 //! within budget.
+//!
+//! Finally, an image block can be unusable in the opposite direction: a capture
+//! that silently wrote a zero-byte file yields an empty base64 payload, which
+//! Anthropic rejects with:
+//!
+//! ```text
+//! messages.612.content.0.tool_result.content.1.image.source.base64: image cannot be empty
+//! ```
+//!
+//! Because tool results are persisted, such a block is replayed on every later
+//! turn, so the session is wedged permanently: retry, model fallback, and even
+//! a fresh resume all fail on the same block. `read` now refuses to attach an
+//! empty file, but sessions recorded before that fix still carry the poison, so
+//! this module also drops unusable image blocks on the way out and leaves a
+//! short note in the tool result they belonged to.
 
 use base64::Engine as _;
 use jcode_message_types::{ContentBlock, Message};
@@ -49,12 +64,21 @@ const IMAGE_BASE64_BYTE_LIMIT: usize = 10 * 1024 * 1024;
 /// Target base64 size we re-encode oversized images down to. Kept a little
 /// under the hard limit so we always land safely inside the cap.
 const IMAGE_BASE64_BYTE_TARGET: usize = 9 * 1024 * 1024;
+/// Prefix of the label text block that `tool_output_to_content_blocks` emits
+/// after an image. When the image it describes is dropped, the orphaned label
+/// must go with it: a stray text block wedged between tool results breaks the
+/// contiguity the Messages API requires for parallel tool calls.
+const ATTACHED_IMAGE_LABEL_PREFIX: &str =
+    "[Attached image associated with the preceding tool result";
+/// Note appended to a tool result whose image could not be sent.
+const DROPPED_IMAGE_NOTE: &str = "\n\n[jcode dropped an unusable image from this tool result (empty or corrupt payload). \
+     The capture that produced it failed; re-capture the image if you still need to see it.]";
 
-/// Inspect `messages` and, if any `ContentBlock::Image` exceeds the per-image
-/// edge limit implied by the total image count, or the per-image base64 byte
-/// cap, return a clamped clone of the messages. Returns `None` when no
-/// downscaling is required so the common path avoids cloning the (potentially
-/// large) message vector.
+/// Inspect `messages` and return a repaired clone when any `ContentBlock::Image`
+/// is unusable (empty/undecodable payload), exceeds the per-image edge limit
+/// implied by the total image count, or exceeds the per-image base64 byte cap.
+/// Returns `None` when nothing needs changing so the common path avoids cloning
+/// the (potentially large) message vector.
 pub(crate) fn clamp_outbound_images(messages: &[Message]) -> Option<Vec<Message>> {
     let image_count = messages
         .iter()
@@ -83,7 +107,8 @@ pub(crate) fn clamp_outbound_images(messages: &[Message]) -> Option<Vec<Message>
             _ => None,
         })
         .any(|(media_type, data)| {
-            data.len() > IMAGE_BASE64_BYTE_LIMIT
+            image_is_unusable(data)
+                || data.len() > IMAGE_BASE64_BYTE_LIMIT
                 || image_exceeds_edge(data, max_edge)
                 || media_type_mismatch(media_type, data)
         });
@@ -94,6 +119,11 @@ pub(crate) fn clamp_outbound_images(messages: &[Message]) -> Option<Vec<Message>
     let mut clamped = messages.to_vec();
     let mut changed = false;
     for message in &mut clamped {
+        // Remove unusable images first so the clamp below only ever sees
+        // payloads that can actually be decoded and sent.
+        if drop_unusable_images(&mut message.content) {
+            changed = true;
+        }
         for block in &mut message.content {
             if let ContentBlock::Image { media_type, data } = block {
                 // Correct a mismatched label first (e.g. JPEG bytes tagged as
@@ -111,6 +141,76 @@ pub(crate) fn clamp_outbound_images(messages: &[Message]) -> Option<Vec<Message>
     }
 
     changed.then_some(clamped)
+}
+
+/// True when an image payload can never be accepted by a provider: blank, not
+/// valid base64, or decoding to no bytes at all. Anything that decodes to real
+/// bytes is left alone here, even in a format we do not recognise, so we never
+/// discard an image we merely failed to understand.
+fn image_is_unusable(data_b64: &str) -> bool {
+    let trimmed = data_b64.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    match decode_b64(trimmed) {
+        Some(bytes) => bytes.is_empty(),
+        None => true,
+    }
+}
+
+/// Drop every unusable image block from one message's content, along with the
+/// now-orphaned label text that followed it, and record what happened in the
+/// tool result the image belonged to. Returns `true` when anything was removed.
+///
+/// Two invariants matter here and are covered by tests:
+/// * tool results stay contiguous, so tool_use/tool_result pairing survives;
+/// * a message never ends up with empty content, which providers also reject.
+fn drop_unusable_images(content: &mut Vec<ContentBlock>) -> bool {
+    if !content
+        .iter()
+        .any(|b| matches!(b, ContentBlock::Image { data, .. } if image_is_unusable(data)))
+    {
+        return false;
+    }
+
+    let mut kept: Vec<ContentBlock> = Vec::with_capacity(content.len());
+    let mut dropped = 0usize;
+    let mut iter = std::mem::take(content).into_iter().peekable();
+    while let Some(block) = iter.next() {
+        match &block {
+            ContentBlock::Image { data, .. } if image_is_unusable(data) => {
+                dropped += 1;
+                // The label text block emitted with this image describes an
+                // image that no longer exists; drop it too.
+                if matches!(
+                    iter.peek(),
+                    Some(ContentBlock::Text { text, .. })
+                        if text.trim_start().starts_with(ATTACHED_IMAGE_LABEL_PREFIX)
+                ) {
+                    iter.next();
+                }
+                // Explain the gap inside the tool result the image came from,
+                // rather than as a sibling block that would split tool results.
+                if let Some(ContentBlock::ToolResult { content, .. }) = kept.last_mut()
+                    && !content.contains(DROPPED_IMAGE_NOTE)
+                {
+                    content.push_str(DROPPED_IMAGE_NOTE);
+                }
+            }
+            _ => kept.push(block),
+        }
+    }
+
+    // Never hand a provider a message with no content at all.
+    if kept.is_empty() {
+        kept.push(ContentBlock::Text {
+            text: DROPPED_IMAGE_NOTE.trim().to_string(),
+            cache_control: None,
+        });
+    }
+
+    *content = kept;
+    dropped > 0
 }
 
 /// Detect an image's true media type from its leading magic bytes. Returns
@@ -579,5 +679,131 @@ mod tests {
             Some("image/webp")
         );
         assert_eq!(sniff_media_type(b"not an image"), None);
+    }
+
+    /// Reproduces the exact shape recorded by the wedged session: a `read` of a
+    /// zero-byte screenshot produced a tool result, an empty image block, and
+    /// the attached-image label. Anthropic answered
+    /// `image.source.base64: image cannot be empty` on every replay.
+    fn poisoned_tool_result_message() -> Message {
+        Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "toolu_01NX7WFMv2VQBh7jgRiLa5cH".to_string(),
+                    content: "Image: /tmp/editor.png (0 bytes)\nDimensions: unknown\nImage sent to model for vision analysis.".to_string(),
+                    is_error: None,
+                },
+                ContentBlock::Image {
+                    media_type: "image/png".to_string(),
+                    data: String::new(),
+                },
+                ContentBlock::Text {
+                    text: "[Attached image associated with the preceding tool result: /tmp/editor.png]".to_string(),
+                    cache_control: None,
+                },
+            ],
+            timestamp: None,
+            tool_duration_ms: None,
+        }
+    }
+
+    #[test]
+    fn empty_image_block_is_dropped_from_outbound_messages() {
+        let messages = vec![poisoned_tool_result_message()];
+        let fixed = clamp_outbound_images(&messages).expect("empty image must be repaired");
+        assert!(
+            !fixed
+                .iter()
+                .flat_map(|m| m.content.iter())
+                .any(|b| matches!(b, ContentBlock::Image { .. })),
+            "no image block may survive with an unusable payload"
+        );
+    }
+
+    #[test]
+    fn dropping_an_empty_image_keeps_tool_result_and_notes_the_gap() {
+        let messages = vec![poisoned_tool_result_message()];
+        let fixed = clamp_outbound_images(&messages).expect("empty image must be repaired");
+        // The tool result must survive, or its tool_use loses its pair.
+        match &fixed[0].content[0] {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } => {
+                assert_eq!(tool_use_id, "toolu_01NX7WFMv2VQBh7jgRiLa5cH");
+                assert!(content.starts_with("Image: /tmp/editor.png (0 bytes)"));
+                assert!(
+                    content.contains("dropped an unusable image"),
+                    "the model should be told why the image is missing: {content}"
+                );
+            }
+            other => panic!("tool result must be preserved, got {other:?}"),
+        }
+        // The orphaned label must go with the image it described, otherwise a
+        // stray text block splits tool results in a parallel-call turn.
+        assert_eq!(
+            fixed[0].content.len(),
+            1,
+            "only the tool result should remain: {:?}",
+            fixed[0].content
+        );
+    }
+
+    #[test]
+    fn dropping_images_never_leaves_a_message_empty() {
+        let messages = vec![image_message(String::new())];
+        let fixed = clamp_outbound_images(&messages).expect("empty image must be repaired");
+        assert!(
+            !fixed[0].content.is_empty(),
+            "a message with no content is itself rejected by providers"
+        );
+        assert!(matches!(fixed[0].content[0], ContentBlock::Text { .. }));
+    }
+
+    #[test]
+    fn whitespace_and_undecodable_payloads_are_treated_as_unusable() {
+        for payload in ["   ", "\n", "not base64!!!", "===="] {
+            let messages = vec![image_message(payload.to_string())];
+            let fixed = clamp_outbound_images(&messages)
+                .unwrap_or_else(|| panic!("payload {payload:?} should be repaired"));
+            assert!(
+                !fixed
+                    .iter()
+                    .flat_map(|m| m.content.iter())
+                    .any(|b| matches!(b, ContentBlock::Image { .. })),
+                "payload {payload:?} must not reach the wire"
+            );
+        }
+    }
+
+    #[test]
+    fn valid_image_beside_an_empty_one_survives_byte_identical() {
+        let good = encode_png(64, 64);
+        let messages = vec![Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Image {
+                    media_type: "image/png".to_string(),
+                    data: String::new(),
+                },
+                ContentBlock::Image {
+                    media_type: "image/png".to_string(),
+                    data: good.clone(),
+                },
+            ],
+            timestamp: None,
+            tool_duration_ms: None,
+        }];
+        let fixed = clamp_outbound_images(&messages).expect("empty image must be repaired");
+        assert_eq!(fixed[0].content.len(), 1, "only the empty image is dropped");
+        match &fixed[0].content[0] {
+            ContentBlock::Image { media_type, data } => {
+                assert_eq!(media_type, "image/png");
+                assert_eq!(data, &good, "a healthy image must not be re-encoded");
+            }
+            other => panic!("expected the healthy image, got {other:?}"),
+        }
     }
 }

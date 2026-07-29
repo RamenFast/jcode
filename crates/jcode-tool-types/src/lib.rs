@@ -33,25 +33,42 @@ impl ToolOutput {
         self
     }
 
-    pub fn with_image(mut self, media_type: impl Into<String>, data: impl Into<String>) -> Self {
-        self.images.push(ToolImage {
-            media_type: media_type.into(),
-            data: data.into(),
-            label: None,
-        });
-        self
+    /// Attach an image, ignoring a blank payload.
+    ///
+    /// Providers reject a request outright when an image block carries an empty
+    /// base64 payload (`image cannot be empty`), and because tool results are
+    /// persisted, one such block poisons the session forever: every later turn
+    /// replays it and fails. A zero-byte capture (e.g. a screenshot pull that
+    /// silently wrote nothing) must therefore never become an image block.
+    pub fn with_image(self, media_type: impl Into<String>, data: impl Into<String>) -> Self {
+        self.push_image(media_type, data, None)
     }
 
+    /// Attach a labeled image, ignoring a blank payload. See [`Self::with_image`].
     pub fn with_labeled_image(
-        mut self,
+        self,
         media_type: impl Into<String>,
         data: impl Into<String>,
         label: impl Into<String>,
     ) -> Self {
+        let label = label.into();
+        self.push_image(media_type, data, Some(label))
+    }
+
+    fn push_image(
+        mut self,
+        media_type: impl Into<String>,
+        data: impl Into<String>,
+        label: Option<String>,
+    ) -> Self {
+        let data = data.into();
+        if data.trim().is_empty() {
+            return self;
+        }
         self.images.push(ToolImage {
             media_type: media_type.into(),
-            data: data.into(),
-            label: Some(label.into()),
+            data,
+            label,
         });
         self
     }
@@ -110,7 +127,36 @@ pub fn resolve_tool_name(name: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use super::ToolOutput;
     use super::resolve_tool_name;
+
+    #[test]
+    fn blank_image_payloads_are_never_attached() {
+        // An empty payload is what a failed capture produces. Providers reject
+        // it ("image cannot be empty") and, since tool results are persisted,
+        // one such block wedges the session permanently.
+        for blank in ["", " ", "\n", "\t  \n"] {
+            let out = ToolOutput::new("ok").with_image("image/png", blank);
+            assert!(
+                out.images.is_empty(),
+                "blank payload {blank:?} was attached"
+            );
+            let out = ToolOutput::new("ok").with_labeled_image("image/png", blank, "shot");
+            assert!(
+                out.images.is_empty(),
+                "blank payload {blank:?} was attached"
+            );
+        }
+    }
+
+    #[test]
+    fn real_image_payloads_are_still_attached_with_their_label() {
+        let out = ToolOutput::new("ok").with_labeled_image("image/png", "iVBORw0KGgo=", "shot");
+        assert_eq!(out.images.len(), 1);
+        assert_eq!(out.images[0].media_type, "image/png");
+        assert_eq!(out.images[0].data, "iVBORw0KGgo=");
+        assert_eq!(out.images[0].label.as_deref(), Some("shot"));
+    }
 
     #[test]
     fn resolve_tool_name_strips_function_namespace_before_alias_resolution() {

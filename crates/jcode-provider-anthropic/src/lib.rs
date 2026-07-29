@@ -186,12 +186,25 @@ pub fn format_messages(messages: &[Message], is_oauth: bool) -> Vec<ApiMessage> 
     merged
 }
 
+/// Prefix of the label text emitted after an image in a tool result. When the
+/// image it describes is skipped, the label must be skipped with it so no stray
+/// text block splits a run of tool results.
+const ATTACHED_IMAGE_LABEL_PREFIX: &str =
+    "[Attached image associated with the preceding tool result";
+
 /// Convert our ContentBlock to Anthropic API format
 pub fn format_content_blocks(blocks: &[ContentBlock], is_oauth: bool) -> Vec<ApiContentBlock> {
     let mut result: Vec<ApiContentBlock> = Vec::new();
+    // Set when an image was skipped, so its orphaned label is skipped too.
+    let mut skip_next_image_label = false;
     for block in blocks {
+        let dropped_image = std::mem::take(&mut skip_next_image_label);
         match block {
             ContentBlock::Text { text, .. } => {
+                // The label for an image we just skipped describes nothing.
+                if dropped_image && text.trim_start().starts_with(ATTACHED_IMAGE_LABEL_PREFIX) {
+                    continue;
+                }
                 // A text block that immediately follows an image-bearing tool_result is the
                 // "[Attached image associated with the preceding tool result: ...]" label
                 // emitted alongside image tool outputs. The Anthropic API requires every
@@ -254,6 +267,16 @@ pub fn format_content_blocks(blocks: &[ContentBlock], is_oauth: bool) -> Vec<Api
                 });
             }
             ContentBlock::Image { media_type, data } => {
+                // Last line of defence: the API rejects the whole request with
+                // `image.source.base64: image cannot be empty`, and a persisted
+                // tool result replays that rejection on every later turn, so an
+                // empty payload must never reach the wire. `read` refuses to
+                // create one and the outbound clamp strips any already recorded;
+                // this catches anything that slips past both.
+                if data.trim().is_empty() {
+                    skip_next_image_label = true;
+                    continue;
+                }
                 let img_block = ToolResultContentBlock::Image {
                     source: ApiImageSource {
                         kind: "base64".to_string(),
@@ -1166,5 +1189,128 @@ mod cache_prefix_invariant_tests {
             with_cache.first().copied(),
             "cache breakpoint must be on the final tool"
         );
+    }
+}
+
+#[cfg(test)]
+mod empty_image_wire_tests {
+    //! The Anthropic API rejects an image block whose base64 payload is empty:
+    //!
+    //! ```text
+    //! messages.612.content.0.tool_result.content.1.image.source.base64: image cannot be empty
+    //! ```
+    //!
+    //! Because tool results are persisted, one such block is replayed on every
+    //! later turn, so the session is wedged permanently. These tests pin the
+    //! wire-level guarantee that no empty image is ever serialized.
+
+    use super::*;
+    use jcode_message_types::ContentBlock;
+
+    /// The exact block sequence recorded by the wedged session: a tool result
+    /// from reading a zero-byte screenshot, the empty image, and its label.
+    fn poisoned_blocks() -> Vec<ContentBlock> {
+        vec![
+            ContentBlock::ToolResult {
+                tool_use_id: "toolu_01NX7WFMv2VQBh7jgRiLa5cH".to_string(),
+                content: "Image: /tmp/editor.png (0 bytes)".to_string(),
+                is_error: None,
+            },
+            ContentBlock::Image {
+                media_type: "image/png".to_string(),
+                data: String::new(),
+            },
+            ContentBlock::Text {
+                text: "[Attached image associated with the preceding tool result: /tmp/editor.png]"
+                    .to_string(),
+                cache_control: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn empty_image_never_reaches_the_wire() {
+        let formatted = format_content_blocks(&poisoned_blocks(), false);
+        let json = serde_json::to_string(&formatted).expect("serialize");
+        assert!(
+            !json.contains(r#""data":"""#),
+            "an empty base64 image was serialized: {json}"
+        );
+    }
+
+    #[test]
+    fn tool_result_survives_and_stays_contiguous() {
+        let formatted = format_content_blocks(&poisoned_blocks(), false);
+        // The tool result must remain, or its tool_use loses its pair.
+        assert!(
+            matches!(
+                formatted.first(),
+                Some(ApiContentBlock::ToolResult { tool_use_id, .. })
+                    if tool_use_id == "toolu_01NX7WFMv2VQBh7jgRiLa5cH"
+            ),
+            "tool result must be preserved"
+        );
+        // The orphaned label must not become a sibling text block: that is what
+        // splits tool results in a parallel tool-call turn.
+        assert_eq!(
+            formatted.len(),
+            1,
+            "only the tool result should remain: {}",
+            serde_json::to_string(&formatted).expect("serialize")
+        );
+    }
+
+    #[test]
+    fn whitespace_only_payload_is_also_dropped() {
+        let blocks = vec![ContentBlock::Image {
+            media_type: "image/png".to_string(),
+            data: "  \n ".to_string(),
+        }];
+        assert!(format_content_blocks(&blocks, false).is_empty());
+    }
+
+    #[test]
+    fn healthy_image_and_its_label_are_preserved() {
+        let blocks = vec![
+            ContentBlock::ToolResult {
+                tool_use_id: "toolu_ok".to_string(),
+                content: "Image: /tmp/good.png".to_string(),
+                is_error: None,
+            },
+            ContentBlock::Image {
+                media_type: "image/png".to_string(),
+                data: "iVBORw0KGgo=".to_string(),
+            },
+            ContentBlock::Text {
+                text: "[Attached image associated with the preceding tool result: /tmp/good.png]"
+                    .to_string(),
+                cache_control: None,
+            },
+        ];
+        let formatted = format_content_blocks(&blocks, false);
+        assert_eq!(formatted.len(), 1, "label folds into the tool result");
+        match &formatted[0] {
+            ApiContentBlock::ToolResult {
+                content: ToolResultContent::Blocks(blocks),
+                ..
+            } => {
+                assert!(
+                    blocks
+                        .iter()
+                        .any(|b| matches!(b, ToolResultContentBlock::Image { source } if source.data == "iVBORw0KGgo=")),
+                    "healthy image must survive untouched"
+                );
+                assert!(
+                    blocks
+                        .iter()
+                        .any(|b| matches!(b, ToolResultContentBlock::Text { text } if text.contains("/tmp/good.png"))),
+                    "its label must survive too"
+                );
+            }
+            _ => panic!(
+                "expected a block-form tool result, got {}",
+                serde_json::to_string(&formatted).expect("serialize")
+            ),
+        }
     }
 }

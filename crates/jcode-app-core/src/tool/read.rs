@@ -351,6 +351,19 @@ fn handle_image_file(path: &Path, file_path: &str) -> Result<ToolOutput> {
 
     let dimensions = get_image_dimensions_from_data(&data);
 
+    // A zero-byte file is a failed capture, not an image. Encoding it produces
+    // an empty base64 payload, which providers reject outright ("image cannot
+    // be empty") -- and because the tool result is persisted, that rejection
+    // repeats on every later turn and wedges the whole session. Report the
+    // failure as text instead so the model can re-capture.
+    if data.is_empty() {
+        return Ok(ToolOutput::new(format!(
+            "Image: {} is empty (0 bytes).\nNo image was attached: an empty file cannot be sent to the model. The capture that wrote this file most likely failed. Re-capture it and read it again.",
+            file_path
+        ))
+        .with_title(format!("📷 {}", file_path)));
+    }
+
     let dim_str = dimensions
         .map(|(w, h)| format!("{}x{}", w, h))
         .unwrap_or_else(|| "unknown".to_string());

@@ -342,3 +342,59 @@ async fn read_tool_prefers_end_line_over_limit() {
         output.output
     );
 }
+
+/// A zero-byte image file is a failed capture. Attaching it produces an empty
+/// base64 payload, which providers reject ("image cannot be empty"), and the
+/// persisted tool result then wedges the session on every later turn.
+#[test]
+fn zero_byte_image_is_reported_instead_of_attached() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("editor.png");
+    std::fs::write(&path, b"").expect("write empty file");
+
+    let output =
+        handle_image_file(&path, path.to_str().expect("utf8 path")).expect("read should succeed");
+
+    assert!(
+        output.images.is_empty(),
+        "an empty file must never be attached as an image: {:?}",
+        output.images
+    );
+    assert!(
+        output.output.contains("empty"),
+        "the model needs to be told the capture failed: {:?}",
+        output.output
+    );
+    assert!(
+        !output.output.contains("Image sent to model"),
+        "must not claim the image was sent: {:?}",
+        output.output
+    );
+}
+
+#[test]
+fn non_empty_image_is_still_attached_for_vision() {
+    // A valid 1x1 PNG. The read path needs real bytes to attach an image.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("shot.png");
+    const PNG_1X1: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+    std::fs::write(&path, PNG_1X1).expect("write png");
+
+    let output =
+        handle_image_file(&path, path.to_str().expect("utf8 path")).expect("read should succeed");
+
+    assert_eq!(
+        output.images.len(),
+        1,
+        "a real image must still be attached"
+    );
+    assert_eq!(output.images[0].media_type, "image/png");
+    assert!(!output.images[0].data.is_empty());
+    assert!(output.output.contains("Image sent to model"));
+}
