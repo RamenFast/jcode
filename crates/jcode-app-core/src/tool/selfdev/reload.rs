@@ -302,21 +302,31 @@ impl SelfDevTool {
             build::read_shared_server_version()?
         };
 
-        // Update manifest - track what we're testing
-        let mut manifest = build::BuildManifest::load()?;
-        manifest.canary = Some(hash.clone());
-        manifest.canary_status = Some(build::CanaryStatus::Testing);
-        manifest.set_pending_activation(build::PendingActivation {
-            session_id: session_id.to_string(),
-            new_version: hash.clone(),
-            previous_current_version: published
-                .as_ref()
-                .and_then(|published| published.previous_current_version.clone()),
-            previous_shared_server_version,
-            source_fingerprint: Some(source.fingerprint.clone()),
-            requested_at: chrono::Utc::now(),
-        })?;
-        manifest.save()?;
+        // Update manifest - track what we're testing.
+        //
+        // A test session fabricates the source state above (`test-reload-hash`),
+        // and `BuildManifest` resolves to the *real* `~/.jcode/builds` unless
+        // `JCODE_HOME` is overridden. Persisting the fake state there leaves a
+        // canary and pending activation pointing at a build that does not exist
+        // on disk, which the next real reload would try to honor. Test sessions
+        // exercise the reload signal/ack contract, not manifest bookkeeping, so
+        // skip the write entirely for them.
+        if !SelfDevTool::is_test_session() {
+            let mut manifest = build::BuildManifest::load()?;
+            manifest.canary = Some(hash.clone());
+            manifest.canary_status = Some(build::CanaryStatus::Testing);
+            manifest.set_pending_activation(build::PendingActivation {
+                session_id: session_id.to_string(),
+                new_version: hash.clone(),
+                previous_current_version: published
+                    .as_ref()
+                    .and_then(|published| published.previous_current_version.clone()),
+                previous_shared_server_version,
+                source_fingerprint: Some(source.fingerprint.clone()),
+                requested_at: chrono::Utc::now(),
+            })?;
+            manifest.save()?;
+        }
 
         if !SelfDevTool::is_test_session()
             && let Err(error) = build::update_shared_server_symlink(&hash)

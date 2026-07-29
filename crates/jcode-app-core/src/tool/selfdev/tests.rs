@@ -1438,3 +1438,57 @@ fn reconcile_keeps_running_request_not_yet_registered_in_live_task_map() {
     assert_eq!(reloaded.state, BuildRequestState::Queued);
     assert!(reloaded.error.is_none());
 }
+
+/// A test session must never write its fabricated build state into the real
+/// `~/.jcode/builds/manifest.json`.
+///
+/// The reload path fakes a `test-reload-hash` source state under
+/// `JCODE_TEST_SESSION`, but `BuildManifest` resolves to the user's real builds
+/// directory unless `JCODE_HOME` is overridden. Persisting the fake state there
+/// left a canary and pending activation pointing at a build that does not exist
+/// on disk, which the next genuine reload would try to honor. Observed in the
+/// wild: running the suite repeatedly reintroduced `canary: test-reload-hash`
+/// into the live manifest, and `selfdev status` reported a phantom canary.
+#[tokio::test]
+async fn test_session_reload_does_not_write_the_real_build_manifest() {
+    let _lock = crate::storage::lock_test_env();
+    let temp = tempfile::TempDir::new().expect("tempdir");
+    let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
+    let _test_session = EnvVarGuard::set("JCODE_TEST_SESSION", "1");
+    // Keep the ack wait short: this test cares about manifest side effects, not
+    // about completing a real reload handshake.
+    let _timeout = EnvVarGuard::set("JCODE_SELFDEV_RELOAD_TIMEOUT_SECS", "1");
+
+    let manifest_path = jcode_build_support::manifest_path().expect("manifest path");
+    std::fs::create_dir_all(manifest_path.parent().expect("builds dir"))
+        .expect("create builds dir");
+    jcode_build_support::BuildManifest::load()
+        .expect("load manifest")
+        .save()
+        .expect("seed manifest");
+    let before = std::fs::read_to_string(&manifest_path).expect("read seeded manifest");
+
+    // Actually drive the reload path. It is expected to fail (no repo/ack in a
+    // unit test); what matters is that it does not persist canary state first.
+    let tool = SelfDevTool::new();
+    let _ = tool
+        .do_reload(
+            None,
+            "session-manifest-guard",
+            ToolExecutionMode::Direct,
+            Some(temp.path()),
+        )
+        .await;
+
+    let after = std::fs::read_to_string(&manifest_path).expect("read manifest after");
+    assert_eq!(
+        before, after,
+        "a test session must not modify the build manifest"
+    );
+    let manifest = jcode_build_support::BuildManifest::load().expect("reload manifest");
+    assert!(
+        manifest.canary.is_none(),
+        "a test session must not publish a canary: {:?}",
+        manifest.canary
+    );
+}
