@@ -29,3 +29,4 @@ Rules:
 - 2026-07-25 [correction] Treat this FEEDBACK.md as Jcode's originating intent and keep implementation choices self-evidently aligned with it.
 - 2026-07-30 [ask] Write every string jcode injects into agent attention to Ben's context standards: the system prompt, the todo quality gates, and the auto-poke continuation. Authority is the ben-context-standards skill.
 - 2026-07-30 [correction] A synthetic gate must mark itself as not a user message, state its effect on the store, name the next action, and disclose no score or threshold. Keep a LEGACY_* alias whenever a detection anchor changes so existing transcripts still replay.
+- 2026-07-30 [claim] Verified live against a freshly built binary: an agent quotes the blocked-outcome labels ("Blocked, Evidence, Best current result, Next step") and restates the highest-practical-access rule from the rewritten system prompt.
