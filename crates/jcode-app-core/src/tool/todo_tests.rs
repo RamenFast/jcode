@@ -475,7 +475,12 @@ fn reframe_nudge_recurs_for_every_low_open_goal_write() {
     assert!(!nudges[0].contains("95"));
     assert!(nudges[0].contains("hill-climbability"));
     assert!(!nudges[0].to_ascii_lowercase().contains("threshold"));
-    assert!(!nudges[0].to_ascii_lowercase().contains("gate"));
+    // The nudge must not disclose that a calibrated *quality gate* exists, but it
+    // must still mark itself as an automated message rather than a user turn, and
+    // the house marker for that names the gate. Forbid the calibration wording,
+    // which is what the model-visible schema check forbids too, not the bare word.
+    assert!(!nudges[0].to_ascii_lowercase().contains("quality gate"));
+    assert!(nudges[0].contains("not a user message]"));
     // A subsequent write receives the same generic guidance while the
     // private condition remains applicable.
     assert_eq!(take_reframe_nudges(&plan, &goals, &todos).len(), 1);
@@ -496,6 +501,8 @@ fn alignment_nudge_is_plan_level_and_independent_of_goals() {
     assert!(nudges[0].contains("Do not ask the user"));
     assert!(!nudges[0].contains("95"));
     assert!(!nudges[0].to_ascii_lowercase().contains("threshold"));
+    assert!(!nudges[0].to_ascii_lowercase().contains("quality gate"));
+    assert!(nudges[0].contains("not a user message]"));
 }
 
 #[test]

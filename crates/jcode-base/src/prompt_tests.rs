@@ -418,3 +418,82 @@ fn classify_effort_distinguishes_reasoning_from_swarm_modes() {
     assert!(EffortKind::SwarmDeep.is_swarm_mode());
     assert!(!EffortKind::Reasoning.is_swarm_mode());
 }
+
+/// The default system prompt is the largest block of model-facing context the
+/// harness owns, so it carries the same writing standard the gate messages do.
+/// This test pins the mechanical, checkable part: no em dash, no semicolon
+/// standing in for one, no marketing adjectives, and no sentence long enough to
+/// bury its instruction. It also pins the load-bearing sections, so a future
+/// trim cannot silently drop the winning condition or the honest-failure path.
+#[test]
+fn default_system_prompt_follows_the_context_writing_standard() {
+    let prompt = DEFAULT_SYSTEM_PROMPT;
+
+    assert!(
+        !prompt.contains('—') && !prompt.contains('–'),
+        "the system prompt must not use dashes where a sentence break belongs"
+    );
+    assert!(
+        !prompt.contains(';'),
+        "the system prompt must not use a semicolon in place of a sentence break"
+    );
+
+    for adjective in [
+        "seamless",
+        "robust",
+        "powerful",
+        "cutting-edge",
+        "world-class",
+        "effortless",
+        "revolutionary",
+    ] {
+        assert!(
+            !prompt.to_ascii_lowercase().contains(adjective),
+            "the system prompt must not advertise with '{adjective}'"
+        );
+    }
+
+    for section in [
+        "## Winning condition",
+        "## When you cannot finish",
+        "## Autonomy and access",
+        "## Hard problems",
+        "## Writing",
+    ] {
+        assert!(
+            prompt.contains(section),
+            "the system prompt is missing the '{section}' section"
+        );
+    }
+
+    // Honest failure needs all four parts, or the model cannot report a block.
+    for part in [
+        "Blocked:",
+        "Evidence:",
+        "Best current result:",
+        "Next step:",
+    ] {
+        assert!(
+            prompt.contains(part),
+            "the blocked-outcome report is missing '{part}'"
+        );
+    }
+
+    // Highest-practical-access posture: no gate merely because an action is strong,
+    // and a real hesitation line for what cannot be undone.
+    assert!(prompt.contains("Do not add an approval gate"));
+    assert!(prompt.contains("Hesitate for what cannot be undone"));
+
+    // Other agents share this machine.
+    assert!(prompt.contains("Never write into another agent's session"));
+
+    let longest = prompt
+        .split(['.', '!', '?', '\n'])
+        .map(|sentence| sentence.split_whitespace().count())
+        .max()
+        .unwrap_or(0);
+    assert!(
+        longest <= 30,
+        "the system prompt has a {longest}-word sentence, too long to read as one instruction"
+    );
+}

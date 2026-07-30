@@ -27,3 +27,5 @@ Rules:
 - 2026-07-25 [ask] Fully repair reload, detach, and dead-terminal continuity paths so interrupted work and healthy live sessions are not lost or misclassified.
 - 2026-07-25 [ask] Make swarm terminal-state reporting truthful enough that vanished workers cannot look like successful completions.
 - 2026-07-25 [correction] Treat this FEEDBACK.md as Jcode's originating intent and keep implementation choices self-evidently aligned with it.
+- 2026-07-30 [ask] Write every string jcode injects into agent attention to Ben's context standards: the system prompt, the todo quality gates, and the auto-poke continuation. Authority is the ben-context-standards skill.
+- 2026-07-30 [correction] A synthetic gate must mark itself as not a user message, state its effect on the store, name the next action, and disclose no score or threshold. Keep a LEGACY_* alias whenever a detection anchor changes so existing transcripts still replay.

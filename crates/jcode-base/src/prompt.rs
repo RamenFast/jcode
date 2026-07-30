@@ -83,7 +83,7 @@ pub const SWARM_DEEP_EFFORT: &str = "swarm-deep";
 
 /// System-prompt directive injected when the active reasoning effort is
 /// [`SWARM_EFFORT`]. Instructs the agent to lean on the swarm tooling.
-pub const SWARM_EFFORT_DIRECTIVE: &str = "# Swarm Effort\n\nYou are running at the maximum reasoning effort with swarm orchestration enabled. For any non-trivial task, decompose the work and use the `swarm` tool to spawn and coordinate parallel agents (spawn workers with concrete prompts, assign tasks, and collect their reports) instead of doing everything yourself in one thread. Prefer parallelizing independent subtasks across swarm members, and use a coordinator/plan when the work has multiple stages. Only skip the swarm for trivial, single-step requests.";
+pub const SWARM_EFFORT_DIRECTIVE: &str = "# Swarm Effort\n\nYou are running at the maximum reasoning effort with swarm orchestration enabled. For any non-trivial task, decompose the work first. Then use the `swarm` tool to spawn and coordinate parallel agents instead of doing everything yourself in one thread. Spawn workers with concrete prompts, assign tasks, and collect their reports. Run independent subtasks in parallel across swarm members. Use a coordinator and a plan when the work has multiple stages. Skip the swarm only for a trivial single-step request.";
 
 /// System-prompt directive injected when the active reasoning effort is
 /// [`SWARM_DEEP_EFFORT`]. Instructs the agent to run the comprehensive DAG-first

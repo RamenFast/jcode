@@ -26,17 +26,29 @@ const LEGACY_TODO_ALIGNMENT_CONTINUATION_MESSAGE: &str = "Your alignment score i
 
 /// Model-facing continuation for the private intent-understanding check.
 /// Deliberately small: think more about the user's intent, do not ask the user.
-pub const TODO_INTENT_UNDERSTANDING_CONTINUATION_MESSAGE: &str = "Your understanding of the user's intent is not high enough. Re-read the request and think harder about what the user actually wants and left implicit, using the conversation and codebase as evidence. Do not ask the user; resolve the ambiguity yourself, then update the plan's user intention and understands_user_intent.";
+///
+/// Written to the model-facing context standard: it marks itself as synthetic,
+/// does one job, names the next action, and discloses no calibration.
+pub const TODO_INTENT_UNDERSTANDING_CONTINUATION_MESSAGE: &str = "[automated todo plan gate - not a user message] Your understanding of the user's intent is not high enough yet. Re-read the request and think harder about what the user actually wants and what they left implicit. Use the conversation and the codebase as evidence. Do not ask the user. Resolve the ambiguity yourself. Then update the plan's user intention and understands_user_intent.";
 
 /// Model-facing continuation for the private hill-climbability check. Names the
 /// assessment category without disclosing the score or threshold. Gentle-coding
 /// voice: the gate is an invitation to sharpen the loop, not a scolding — but it
 /// must keep its anchor phrases (guard-tested) and disclose no calibration.
-pub const TODO_HILL_CLIMBABILITY_CONTINUATION_MESSAGE: &str = "Your hill-climbability is not high enough yet — this goal deserves a loop you can actually climb. First, improve the goal's objective and feedback loop so progress can be measured across iterations. Then call the todo tool again with the revised goal before continuing the task. The goal is to create a strong feedback loop you can iterate against.";
+pub const TODO_HILL_CLIMBABILITY_CONTINUATION_MESSAGE: &str = "[automated todo plan gate - not a user message] Your hill-climbability is not high enough yet. This goal deserves a loop you can climb. First, improve the goal's objective and feedback loop so you can measure progress across iterations. Then call the todo tool again with the revised goal before continuing the task. The aim is a strong feedback loop you can iterate against.";
 
 /// Model-facing continuation for the private end-to-end ownership check. Names
 /// the assessment category without disclosing the score or threshold.
-pub const TODO_OWNERSHIP_CONTINUATION_MESSAGE: &str = "Your end-to-end ownership is not high enough to complete this goal yet — the work is close; carry it the rest of the way. Take ownership of the full user outcome, not just the immediate implementation. Follow the work through every relevant integration and runtime path, resolve consequential gaps, validate the complete workflow, and finish the necessary follow-through. Then call the todo tool again, setting a higher `end_to_end_ownership` on the goal for this group; until that field is raised the write is rejected and the stored todo list is left unchanged.";
+pub const TODO_OWNERSHIP_CONTINUATION_MESSAGE: &str = "[automated todo completion gate - not a user message] Your end-to-end ownership is not high enough to close this goal yet. The work is close. Carry it the rest of the way. Take ownership of the full user outcome, not only the immediate implementation. Follow the work through every relevant integration and runtime path, and resolve the gaps you find. Validate the complete workflow, then finish the necessary follow-through. Then call the todo tool again and raise `end_to_end_ownership` on this group's goal. Until you raise that field, this write stays rejected and the stored todo list stays unchanged.";
+
+/// Pre-standard-rewrite plan-gate texts. Kept only so persisted transcripts
+/// still classify them as synthetic gate messages, not user turns.
+const LEGACY_TODO_INTENT_UNDERSTANDING_CONTINUATION_MESSAGE: &str =
+    "Your understanding of the user's intent is not high enough.";
+const LEGACY_TODO_HILL_CLIMBABILITY_CONTINUATION_MESSAGE: &str =
+    "Your hill-climbability is not high enough yet";
+const LEGACY_TODO_OWNERSHIP_CONTINUATION_MESSAGE: &str =
+    "Your end-to-end ownership is not high enough to complete this goal yet";
 
 /// Model-facing notice that a gated todo write was refused. Without this, a
 /// rejected write returns the previously stored list with only the assessment
@@ -48,12 +60,12 @@ pub const TODO_WRITE_REJECTED_NOTICE: &str = "This update was NOT saved. The tod
 
 /// Model-facing continuation for private completion-confidence checks. Names
 /// the assessment category without disclosing scores, items, or thresholds.
-pub const TODO_COMPLETION_CONTINUATION_MESSAGE: &str = "[automated todo completion gate - not a user message] Your completion confidence is missing or not high enough yet — worth one more look before calling it done. Do not reply conversationally or wait for the user. Instead: Validate the completed result more thoroughly with concrete evidence, address any remaining issues, then call the todo tool again with updated completion_confidence values that reflect the validation you performed.";
+pub const TODO_COMPLETION_CONTINUATION_MESSAGE: &str = "[automated todo completion gate - not a user message] Your completion confidence is absent or not high enough yet. One more look is worth it before you call this done. Do not reply conversationally, and do not wait for the user. Validate the completed result with concrete evidence, then address any issue you find. Then call the todo tool again with completion_confidence values that reflect what you checked.";
 
 /// Model-facing continuation for a completed todo whose confidence rose too
 /// sharply at the end. It names the behavior without disclosing the numeric
 /// cutoff, individual todo, or recorded scores.
-pub const TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE: &str = "[automated todo completion gate - not a user message] Your completion confidence rose too sharply to count as independently validated — evidence earns certainty in steps, not a final leap. Do not reply conversationally or wait for the user. Instead: recheck the completed result using concrete evidence, address any issues you find, then call the todo tool again with completion_confidence values that reflect the validation you performed.";
+pub const TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE: &str = "[automated todo completion gate - not a user message] Your completion confidence rose too sharply to count as independently validated. Evidence earns certainty in steps, not in one final leap. Do not reply conversationally, and do not wait for the user. Recheck the completed result with concrete evidence, then address any issue you find. Then call the todo tool again with completion_confidence values that reflect what you checked.";
 
 /// A completed todo is considered spike-finished when its final recorded
 /// confidence increase is at least this large.
@@ -145,7 +157,7 @@ pub fn spike_completed_todos(todos: &[TodoItem]) -> Vec<&TodoItem> {
 /// "update the todo tool." suffix.
 pub fn build_auto_poke_message(incomplete_count: usize) -> String {
     format!(
-        "You have {} incomplete todo{}. No rush — pick the work back up when ready, or if it's already done or the plan has changed, update the todo tool.",
+        "You have {} incomplete todo{}. No rush. Pick the work up again when you are ready. If the work is already done, or the plan changed, update the todo tool.",
         incomplete_count,
         if incomplete_count == 1 { "" } else { "s" },
     )
@@ -171,6 +183,9 @@ pub fn is_auto_poke_message(message: &str) -> bool {
         || trimmed.starts_with(TODO_OWNERSHIP_CONTINUATION_MESSAGE)
         || trimmed.starts_with(TODO_COMPLETION_CONTINUATION_MESSAGE)
         || trimmed.starts_with(TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE)
+        || trimmed.starts_with(LEGACY_TODO_INTENT_UNDERSTANDING_CONTINUATION_MESSAGE)
+        || trimmed.starts_with(LEGACY_TODO_HILL_CLIMBABILITY_CONTINUATION_MESSAGE)
+        || trimmed.starts_with(LEGACY_TODO_OWNERSHIP_CONTINUATION_MESSAGE)
         || trimmed.starts_with(LEGACY_TODO_COMPLETION_CONTINUATION_MESSAGE)
         || trimmed.starts_with(LEGACY_TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE)
         || trimmed.starts_with(LEGACY_TODO_CONFIDENCE_SUMMARY_PREFIX)
@@ -367,6 +382,91 @@ mod tests {
         assert!(TODO_COMPLETION_CONTINUATION_MESSAGE.contains("Validate the completed result"));
         assert!(TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE.contains("concrete evidence"));
         assert!(TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE.contains("rose too sharply"));
+    }
+
+    /// Every synthetic gate obeys the model-facing context standard. These
+    /// strings land mid-flow, sometimes repeatedly, and the human reads them in
+    /// the transcript. The standard: mark the message as synthetic so it cannot
+    /// read as the user, keep instruction sentences short, and use no em dash
+    /// or semicolon. Calibration privacy is covered by the test above.
+    #[test]
+    fn gate_messages_follow_the_model_facing_context_standard() {
+        let gates = [
+            (
+                "intent",
+                TODO_INTENT_UNDERSTANDING_CONTINUATION_MESSAGE,
+                "next action",
+                "update the plan's user intention",
+            ),
+            (
+                "hill-climbability",
+                TODO_HILL_CLIMBABILITY_CONTINUATION_MESSAGE,
+                "next action",
+                "call the todo tool again",
+            ),
+            (
+                "ownership",
+                TODO_OWNERSHIP_CONTINUATION_MESSAGE,
+                "next action",
+                "call the todo tool again",
+            ),
+            (
+                "completion",
+                TODO_COMPLETION_CONTINUATION_MESSAGE,
+                "next action",
+                "call the todo tool again",
+            ),
+            (
+                "spike",
+                TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE,
+                "next action",
+                "call the todo tool again",
+            ),
+        ];
+
+        for (name, message, requirement, needle) in gates {
+            assert!(
+                message.starts_with("[automated todo ") && message.contains("not a user message]"),
+                "{name} gate must mark itself as synthetic, not a user turn: {message}"
+            );
+            assert!(
+                message.contains(needle),
+                "{name} gate is missing its {requirement} ({needle}): {message}"
+            );
+            assert!(
+                !message.contains('—') && !message.contains('–'),
+                "{name} gate uses a dash instead of a sentence break: {message}"
+            );
+            assert!(
+                !message.contains(';'),
+                "{name} gate uses a semicolon instead of a sentence break: {message}"
+            );
+            let longest = longest_sentence_words(message);
+            assert!(
+                longest <= 25,
+                "{name} gate has a {longest}-word sentence, over the 25-word cap: {message}"
+            );
+        }
+
+        // The refusal notice must state the effect on the world, so a rejected
+        // write cannot read as a silent no-op.
+        assert!(TODO_WRITE_REJECTED_NOTICE.contains("NOT saved"));
+        assert!(TODO_WRITE_REJECTED_NOTICE.contains("unchanged"));
+
+        // The auto-poke line is warm, marked by its own anchors, and offers the
+        // two legitimate outs rather than a bare imperative.
+        let poke = build_auto_poke_message(2);
+        assert!(is_auto_poke_message(&poke));
+        assert!(!poke.contains('—') && !poke.contains(';'));
+        assert!(longest_sentence_words(&poke) <= 25);
+    }
+
+    /// Word count of the longest sentence, splitting on `.`, `!`, and `?`.
+    fn longest_sentence_words(text: &str) -> usize {
+        text.split(['.', '!', '?'])
+            .map(|sentence| sentence.split_whitespace().count())
+            .max()
+            .unwrap_or(0)
     }
 
     #[test]
