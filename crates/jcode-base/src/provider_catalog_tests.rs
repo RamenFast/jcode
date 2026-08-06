@@ -194,7 +194,7 @@ fn resolved_named_profile_skips_non_chat_models_when_picking_newest_default() {
 }
 
 #[test]
-fn minimax_token_plan_keys_resolve_to_china_endpoint_without_changing_international_default() {
+fn minimax_subscription_keys_stay_on_the_international_endpoint() {
     let _lock = crate::storage::lock_test_env();
     let _guard = EnvGuard::save(&["OPENAI_API_KEY"]);
     crate::env::remove_var("OPENAI_API_KEY");
@@ -206,12 +206,12 @@ fn minimax_token_plan_keys_resolve_to_china_endpoint_without_changing_internatio
         "https://platform.minimax.io/docs/guides/text-generation"
     );
 
-    let china = resolve_openai_compatible_profile_with_api_key_hint(
+    let subscription = resolve_openai_compatible_profile_with_api_key_hint(
         MINIMAX_PROFILE,
         Some("sk-cp-test-token"),
     );
-    assert_eq!(china.api_base, MINIMAX_CHINA_API_BASE);
-    assert_eq!(china.setup_url, MINIMAX_CHINA_SETUP_URL);
+    assert_eq!(subscription.api_base, international.api_base);
+    assert_eq!(subscription.setup_url, international.setup_url);
 }
 
 #[test]

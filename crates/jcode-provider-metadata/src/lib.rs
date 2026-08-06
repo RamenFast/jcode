@@ -422,6 +422,7 @@ mod tests {
     fn minimax_profile_uses_official_openai_compatible_configuration() {
         assert_eq!(MINIMAX_PROFILE.api_base, "https://api.minimax.io/v1");
         assert_eq!(MINIMAX_PROFILE.api_key_env, "OPENAI_API_KEY");
+        assert_eq!(MINIMAX_PROFILE.default_model, Some("MiniMax-M3"));
     }
 
     #[test]
