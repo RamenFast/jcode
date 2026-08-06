@@ -236,6 +236,56 @@ fn test_preferred_tools_files_are_loaded_from_project_and_global_jcode_dirs() {
 }
 
 #[test]
+fn prompt_overlay_loads_once_when_home_is_the_working_directory() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_home = std::env::var_os("JCODE_HOME");
+    let temp = tempfile::TempDir::new().unwrap();
+    let jcode_home = temp.path().join(".jcode");
+    crate::env::set_var("JCODE_HOME", &jcode_home);
+    std::fs::create_dir_all(&jcode_home).unwrap();
+    let content = "single home prompt overlay";
+    std::fs::write(jcode_home.join("prompt-overlay.md"), content).unwrap();
+
+    let (loaded, chars) = load_prompt_overlay_files_from_dir(Some(temp.path()));
+    let loaded = loaded.expect("prompt overlay content");
+    assert_eq!(loaded.matches(content).count(), 1);
+    assert_eq!(chars, content.len());
+    assert!(loaded.contains("Global Prompt Overlay (~/.jcode/prompt-overlay.md)"));
+    assert!(!loaded.contains("Project Prompt Overlay (.jcode/prompt-overlay.md)"));
+
+    if let Some(prev_home) = prev_home {
+        crate::env::set_var("JCODE_HOME", prev_home);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
+}
+
+#[test]
+fn preferred_tools_load_once_when_home_is_the_working_directory() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_home = std::env::var_os("JCODE_HOME");
+    let temp = tempfile::TempDir::new().unwrap();
+    let jcode_home = temp.path().join(".jcode");
+    crate::env::set_var("JCODE_HOME", &jcode_home);
+    std::fs::create_dir_all(&jcode_home).unwrap();
+    let content = "single home preferred tools";
+    std::fs::write(jcode_home.join("preferred-tools.md"), content).unwrap();
+
+    let (loaded, chars) = load_preferred_tools_files_from_dir(Some(temp.path()));
+    let loaded = loaded.expect("preferred tools content");
+    assert_eq!(loaded.matches(content).count(), 1);
+    assert_eq!(chars, content.len());
+    assert!(loaded.contains("Global Preferred Tools (~/.jcode/preferred-tools.md)"));
+    assert!(!loaded.contains("Project Preferred Tools (.jcode/preferred-tools.md)"));
+
+    if let Some(prev_home) = prev_home {
+        crate::env::set_var("JCODE_HOME", prev_home);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
+}
+
+#[test]
 fn test_swarm_prompt_prefers_project_then_global_then_default() {
     let _guard = crate::storage::lock_test_env();
     let prev_home = std::env::var_os("JCODE_HOME");

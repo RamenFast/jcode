@@ -47,6 +47,7 @@ pub mod import;
 pub mod live_tests;
 pub mod logging;
 pub mod login_qr;
+pub mod manifestation;
 pub mod mcp;
 pub mod memory;
 pub mod memory_agent;

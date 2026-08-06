@@ -614,6 +614,14 @@ fn build_selfdev_prompt_for_context(context: SelfDevProductContext) -> String {
 
 /// Build immutable session context captured once per session.
 pub fn build_session_context(working_dir: Option<&Path>) -> String {
+    build_session_context_with_model(working_dir, None, None)
+}
+
+pub fn build_session_context_with_model(
+    working_dir: Option<&Path>,
+    provider_key: Option<&str>,
+    model: Option<&str>,
+) -> String {
     let mut lines = vec!["# Session Context".to_string()];
 
     let now_utc = chrono::Utc::now();
@@ -626,6 +634,10 @@ pub fn build_session_context(working_dir: Option<&Path>) -> String {
         "Jcode version: {} ({})",
         jcode_build_meta::version(),
         jcode_build_meta::git_hash()
+    ));
+    lines.extend(crate::manifestation::active_model_context_lines(
+        provider_key,
+        model,
     ));
 
     if let Some(hardware) = hardware_context() {
@@ -876,15 +888,25 @@ fn load_prompt_overlay_files_from_dir(working_dir: Option<&Path>) -> (Option<Str
     };
 
     let project_dir = working_dir.unwrap_or(Path::new("."));
-    if let Some((content, size)) = load_file(
-        &project_dir.join(".jcode").join("prompt-overlay.md"),
-        "Project Prompt Overlay (.jcode/prompt-overlay.md)",
-    ) {
+    let project_overlay = project_dir.join(".jcode").join("prompt-overlay.md");
+    let global_overlay = crate::storage::jcode_dir()
+        .ok()
+        .map(|dir| dir.join("prompt-overlay.md"));
+    let project_is_global = global_overlay
+        .as_deref()
+        .is_some_and(|global_overlay| paths_refer_to_same_file(&project_overlay, global_overlay));
+
+    if !project_is_global
+        && let Some((content, size)) = load_file(
+            &project_overlay,
+            "Project Prompt Overlay (.jcode/prompt-overlay.md)",
+        )
+    {
         total_chars += size;
         contents.push(content);
     }
 
-    if let Ok(global_overlay) = crate::storage::jcode_dir().map(|dir| dir.join("prompt-overlay.md"))
+    if let Some(global_overlay) = global_overlay
         && let Some((content, size)) = load_file(
             &global_overlay,
             "Global Prompt Overlay (~/.jcode/prompt-overlay.md)",
@@ -919,16 +941,25 @@ fn load_preferred_tools_files_from_dir(working_dir: Option<&Path>) -> (Option<St
     };
 
     let project_dir = working_dir.unwrap_or(Path::new("."));
-    if let Some((content, size)) = load_file(
-        &project_dir.join(".jcode").join("preferred-tools.md"),
-        "Project Preferred Tools (.jcode/preferred-tools.md)",
-    ) {
+    let project_preferred_tools = project_dir.join(".jcode").join("preferred-tools.md");
+    let global_preferred_tools = crate::storage::jcode_dir()
+        .ok()
+        .map(|dir| dir.join("preferred-tools.md"));
+    let project_is_global = global_preferred_tools
+        .as_deref()
+        .is_some_and(|global| paths_refer_to_same_file(&project_preferred_tools, global));
+
+    if !project_is_global
+        && let Some((content, size)) = load_file(
+            &project_preferred_tools,
+            "Project Preferred Tools (.jcode/preferred-tools.md)",
+        )
+    {
         total_chars += size;
         contents.push(content);
     }
 
-    if let Ok(global_preferred_tools) =
-        crate::storage::jcode_dir().map(|dir| dir.join("preferred-tools.md"))
+    if let Some(global_preferred_tools) = global_preferred_tools
         && let Some((content, size)) = load_file(
             &global_preferred_tools,
             "Global Preferred Tools (~/.jcode/preferred-tools.md)",
@@ -943,6 +974,14 @@ fn load_preferred_tools_files_from_dir(working_dir: Option<&Path>) -> (Option<St
     } else {
         (Some(contents.join("\n\n")), total_chars)
     }
+}
+
+fn paths_refer_to_same_file(left: &Path, right: &Path) -> bool {
+    left == right
+        || matches!(
+            (std::fs::canonicalize(left), std::fs::canonicalize(right)),
+            (Ok(left), Ok(right)) if left == right
+        )
 }
 
 #[cfg(test)]

@@ -95,9 +95,11 @@ impl Agent {
     ) -> Result<()> {
         self.provider.set_route_selection(selection)?;
         let resolved_model = self.provider.model();
-        self.session.provider_key = Some(selection.runtime_key.stable_id());
         self.session.route_api_method = Some(selection.api_method.clone());
-        self.session.model = Some(resolved_model.clone());
+        self.session.record_model_change(
+            Some(selection.runtime_key.stable_id()),
+            resolved_model.clone(),
+        );
         let event = crate::provider::ProviderStateEvent::selected_model(source, resolved_model);
         self.provider_runtime_state.apply(event);
         self.persist_session_best_effort("route selection");
@@ -119,13 +121,13 @@ impl Agent {
     ) -> Result<()> {
         crate::provider::set_model_with_auth_refresh(self.provider.as_ref(), model)?;
         let resolved_model = self.provider.model();
-        self.session.provider_key =
-            crate::provider::MultiProvider::session_provider_key_after_model_switch(
-                model,
-                self.provider.name(),
-                self.session.provider_key.as_deref(),
-            );
-        self.session.model = Some(resolved_model.clone());
+        let provider_key = crate::provider::MultiProvider::session_provider_key_after_model_switch(
+            model,
+            self.provider.name(),
+            self.session.provider_key.as_deref(),
+        );
+        self.session
+            .record_model_change(provider_key, resolved_model.clone());
         let event = crate::provider::ProviderStateEvent::selected_model(source, resolved_model);
         self.provider_runtime_state.apply(event);
         self.persist_session_best_effort("model selection");

@@ -45,13 +45,13 @@ impl App {
         self.invalidate_model_picker_cache();
         let active_model = self.provider.model();
         self.update_context_limit_for_model(&active_model);
-        self.session.provider_key =
-            crate::provider::MultiProvider::session_provider_key_after_model_switch(
-                model_request,
-                self.provider.name(),
-                self.session.provider_key.as_deref(),
-            );
-        self.session.model = Some(active_model.clone());
+        let provider_key = crate::provider::MultiProvider::session_provider_key_after_model_switch(
+            model_request,
+            self.provider.name(),
+            self.session.provider_key.as_deref(),
+        );
+        self.session
+            .record_model_change(provider_key, active_model.clone());
         let _ = self.session.save();
         active_model
     }
@@ -501,13 +501,14 @@ impl App {
                 self.invalidate_model_picker_cache();
                 let active_model = self.provider.model();
                 self.update_context_limit_for_model(&active_model);
-                self.session.provider_key =
+                let provider_key =
                     crate::provider::MultiProvider::session_provider_key_after_model_switch(
                         &spec,
                         self.provider.name(),
                         self.session.provider_key.as_deref(),
                     );
-                self.session.model = Some(active_model.clone());
+                self.session
+                    .record_model_change(provider_key, active_model.clone());
                 self.session.route_api_method = Some(offer.selection.api_method.clone());
                 let _ = self.session.save();
                 self.push_display_message(DisplayMessage::system(format!(

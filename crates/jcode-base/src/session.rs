@@ -905,8 +905,11 @@ impl Session {
             self.working_dir = current_working_dir_string();
         }
 
-        let context =
-            crate::prompt::build_session_context(self.working_dir.as_deref().map(Path::new));
+        let context = crate::prompt::build_session_context_with_model(
+            self.working_dir.as_deref().map(Path::new),
+            self.provider_key.as_deref(),
+            self.model.as_deref(),
+        );
         let wrapped = format!("<system-reminder>\n{}\n</system-reminder>", context.trim());
         self.add_message_with_display_role(
             Role::User,
@@ -937,8 +940,11 @@ impl Session {
             return false;
         };
 
-        let context =
-            crate::prompt::build_session_context(self.working_dir.as_deref().map(Path::new));
+        let context = crate::prompt::build_session_context_with_model(
+            self.working_dir.as_deref().map(Path::new),
+            self.provider_key.as_deref(),
+            self.model.as_deref(),
+        );
         let wrapped = format!("<system-reminder>\n{}\n</system-reminder>", context.trim());
         for block in &mut message.content {
             if let ContentBlock::Text { text, .. } = block
@@ -955,6 +961,29 @@ impl Session {
         }
 
         false
+    }
+
+    /// Update the active provider/model and append an agent-visible identity notice
+    /// when either value changed.
+    pub fn record_model_change(&mut self, provider_key: Option<String>, model: String) -> bool {
+        let changed = self.provider_key.as_deref() != provider_key.as_deref()
+            || self.model.as_deref() != Some(model.as_str());
+        self.provider_key = provider_key;
+        self.model = Some(model.clone());
+        if !changed {
+            return false;
+        }
+
+        let text = crate::manifestation::model_change_notice(self.provider_key.as_deref(), &model);
+        self.add_message_with_display_role(
+            Role::User,
+            vec![ContentBlock::Text {
+                text,
+                cache_control: None,
+            }],
+            Some(StoredDisplayRole::System),
+        );
+        true
     }
 
     /// Get the display name for this session (short memorable name if available)

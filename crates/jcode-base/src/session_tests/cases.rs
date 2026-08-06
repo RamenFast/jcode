@@ -282,6 +282,101 @@ fn initial_session_context_is_persisted_once_and_not_overwritten() {
 }
 
 #[test]
+fn initial_session_context_includes_active_manifestation() -> Result<()> {
+    let _env_lock = lock_env();
+    let temp_home = tempfile::Builder::new()
+        .prefix("jcode-manifestation-context-")
+        .tempdir()
+        .map_err(|e| anyhow!(e))?;
+    let _home = EnvVarGuard::set("JCODE_HOME", temp_home.path().as_os_str());
+    std::fs::write(
+        temp_home
+            .path()
+            .join(crate::manifestation::MANIFESTATIONS_FILE),
+        r#"
+            [[manifestations]]
+            name = "Solaris"
+            character = "the sun"
+            provider_keys = ["openai"]
+            models = ["gpt-5.6-sol"]
+        "#,
+    )?;
+
+    let mut session = Session::create_with_id(
+        "session_manifestation_context".to_string(),
+        None,
+        Some("Manifestation context".to_string()),
+    );
+    session.provider_key = Some("openai".to_string());
+    session.model = Some("gpt-5.6-sol".to_string());
+
+    assert!(session.ensure_initial_session_context_message());
+    let context = session.messages[0].content_preview();
+    assert!(context.contains("Active provider: openai"));
+    assert!(context.contains("Active model: gpt-5.6-sol"));
+    assert!(context.contains("Manifestation: Solaris"));
+    assert!(context.contains("Refer to yourself as Solaris"));
+    assert!(context.contains("MANIFESTATIONS.toml"));
+    Ok(())
+}
+
+#[test]
+fn model_change_appends_one_provider_visible_identity_notice() -> Result<()> {
+    let _env_lock = lock_env();
+    let temp_home = tempfile::Builder::new()
+        .prefix("jcode-manifestation-switch-")
+        .tempdir()
+        .map_err(|e| anyhow!(e))?;
+    let _home = EnvVarGuard::set("JCODE_HOME", temp_home.path().as_os_str());
+    std::fs::write(
+        temp_home
+            .path()
+            .join(crate::manifestation::MANIFESTATIONS_FILE),
+        r#"
+            [[manifestations]]
+            name = "Solaris"
+            character = "the sun"
+            provider_keys = ["openai"]
+            models = ["gpt-5.6-sol"]
+
+            [[manifestations]]
+            name = "Sounder"
+            character = "the depth reader"
+            provider_keys = ["deepseek"]
+        "#,
+    )?;
+
+    let mut session = Session::create_with_id(
+        "session_manifestation_switch".to_string(),
+        None,
+        Some("Manifestation switch".to_string()),
+    );
+    session.provider_key = Some("openai".to_string());
+    session.model = Some("gpt-5.6-sol".to_string());
+    assert!(session.ensure_initial_session_context_message());
+
+    assert!(
+        session.record_model_change(Some("deepseek".to_string()), "deepseek-v4-pro".to_string(),)
+    );
+    assert_eq!(session.messages.len(), 2);
+    let notice = &session.messages[1];
+    assert_eq!(notice.role, Role::User);
+    assert_eq!(notice.display_role, Some(StoredDisplayRole::System));
+    let notice = notice.content_preview();
+    assert!(notice.contains("# Active Model Changed"));
+    assert!(notice.contains("Active provider: deepseek"));
+    assert!(notice.contains("Active model: deepseek-v4-pro"));
+    assert!(notice.contains("Manifestation: Sounder"));
+    assert!(notice.contains("Refer to yourself as Sounder"));
+
+    assert!(
+        !session.record_model_change(Some("deepseek".to_string()), "deepseek-v4-pro".to_string(),)
+    );
+    assert_eq!(session.messages.len(), 2);
+    Ok(())
+}
+
+#[test]
 #[allow(clippy::redundant_closure_call)]
 fn initial_session_context_preserves_explicitly_bound_cwd_when_inserted() -> Result<()> {
     let _env_lock = lock_env();

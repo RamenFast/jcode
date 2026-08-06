@@ -83,12 +83,11 @@ impl Sidecar {
 
     fn with_configured_model(configured_model: Option<String>) -> Self {
         let (backend, model) = if let Some(model) = configured_model {
-            match crate::provider::provider_for_model(&model) {
-                Some("openai") => (SidecarBackend::OpenAI, model),
-                Some("claude") => (SidecarBackend::Claude, model),
-                _ => {
+            match configured_backend_and_model(&model) {
+                Some(selection) => selection,
+                None => {
                     crate::logging::warn(&format!(
-                        "Ignoring unsupported memory sidecar model override '{}'; expected an OpenAI or Claude model",
+                        "Ignoring unsupported memory sidecar model override '{}'. Fix: use an OpenAI or Claude model, with an optional provider prefix.",
                         model
                     ));
                     Self::auto_select_backend()
@@ -668,6 +667,36 @@ Output ONLY the formatted lines, no other text. If no NEW memories worth extract
     }
 }
 
+fn configured_backend_and_model(model_spec: &str) -> Option<(SidecarBackend, String)> {
+    let model_spec = model_spec.trim();
+    if model_spec.is_empty() {
+        return None;
+    }
+
+    if let Some((provider, _, model)) = crate::provider::explicit_model_provider_prefix(model_spec)
+    {
+        let model = model.trim();
+        if model.is_empty() {
+            return None;
+        }
+        return match provider {
+            jcode_provider_core::ActiveProvider::OpenAI => {
+                Some((SidecarBackend::OpenAI, model.to_string()))
+            }
+            jcode_provider_core::ActiveProvider::Claude => {
+                Some((SidecarBackend::Claude, model.to_string()))
+            }
+            _ => None,
+        };
+    }
+
+    match crate::provider::provider_for_model(model_spec) {
+        Some("openai") => Some((SidecarBackend::OpenAI, model_spec.to_string())),
+        Some("claude") => Some((SidecarBackend::Claude, model_spec.to_string())),
+        _ => None,
+    }
+}
+
 impl Default for Sidecar {
     fn default() -> Self {
         Self::new()
@@ -1065,6 +1094,22 @@ mod tests {
         assert_eq!(sidecar.model, SIDECAR_OPENAI_MODEL);
         codex::set_active_account_override(None);
         crate::auth::claude::set_active_account_override(None);
+    }
+
+    #[test]
+    fn route_qualified_sol_selects_openai_without_auto_redirect() {
+        let sidecar = Sidecar::with_configured_model(Some("openai-oauth:gpt-5.6-sol".to_string()));
+        assert_eq!(sidecar.backend, SidecarBackend::OpenAI);
+        assert_eq!(sidecar.model, "gpt-5.6-sol");
+    }
+
+    #[test]
+    fn route_qualified_claude_model_selects_claude_without_auto_redirect() {
+        let sidecar = Sidecar::with_configured_model(Some(
+            "claude-oauth:claude-haiku-4-5-20241022".to_string(),
+        ));
+        assert_eq!(sidecar.backend, SidecarBackend::Claude);
+        assert_eq!(sidecar.model, "claude-haiku-4-5-20241022");
     }
 
     #[test]
