@@ -614,6 +614,7 @@ fn provider_keys_for_env(env_key: &str) -> &'static [&'static str] {
         "KIMI_API_KEY" => &["kimi-coding", "kimi", "moonshot"],
         "MINIMAX_API_KEY" => &["minimax"],
         "MINIMAX_CN_API_KEY" => &["minimax-cn"],
+        "META_API_KEY" => &["meta"],
         "NEBIUS_API_KEY" => &["nebius"],
         "SCALEWAY_API_KEY" => &["scaleway"],
         "STACKIT_API_KEY" => &["stackit"],

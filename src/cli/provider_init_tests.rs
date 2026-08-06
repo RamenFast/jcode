@@ -45,6 +45,7 @@ fn test_provider_choice_arg_values() {
     assert_eq!(ProviderChoice::Deepinfra.as_arg_value(), "deepinfra");
     assert_eq!(ProviderChoice::Fireworks.as_arg_value(), "fireworks");
     assert_eq!(ProviderChoice::Minimax.as_arg_value(), "minimax");
+    assert_eq!(ProviderChoice::Meta.as_arg_value(), "meta");
     assert_eq!(ProviderChoice::Xai.as_arg_value(), "xai");
     assert_eq!(ProviderChoice::XiaomiMimo.as_arg_value(), "xiaomi-mimo");
     assert_eq!(ProviderChoice::Celeris.as_arg_value(), "celeris");

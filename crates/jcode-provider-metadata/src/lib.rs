@@ -426,6 +426,21 @@ mod tests {
     }
 
     #[test]
+    fn meta_profile_exposes_contributor_model_api_configuration() {
+        assert_eq!(META_PROFILE.api_base, "https://api.meta.ai/v1");
+        assert_eq!(META_PROFILE.api_key_env, "META_API_KEY");
+        assert_eq!(META_PROFILE.env_file, "meta.env");
+        assert_eq!(
+            META_PROFILE.default_model,
+            Some("muse-spark-1.2-contributor")
+        );
+        assert!(matches!(
+            META_LOGIN_PROVIDER.target,
+            LoginProviderTarget::OpenAiCompatible(profile) if profile.id == "meta"
+        ));
+    }
+
+    #[test]
     fn nvidia_nim_profile_uses_hosted_openai_compatible_configuration() {
         assert_eq!(
             NVIDIA_NIM_PROFILE.api_base,

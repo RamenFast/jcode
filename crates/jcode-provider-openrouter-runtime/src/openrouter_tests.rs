@@ -725,6 +725,26 @@ fn minimax_profile_exposes_static_models_before_catalog_refresh() {
 }
 
 #[test]
+fn meta_profile_exposes_contributor_model_before_catalog_refresh() {
+    let models = jcode_base::provider_catalog::openai_compatible_profile_static_models(
+        jcode_provider_metadata::META_PROFILE,
+    );
+    assert_eq!(
+        models.first().map(String::as_str),
+        Some("muse-spark-1.2-contributor")
+    );
+    assert!(models.iter().any(|model| model == "muse-spark-1.2"));
+    assert!(models.iter().any(|model| model == "muse-spark-1.1"));
+    assert_eq!(
+        jcode_base::provider_catalog::openai_compatible_profile_context_limit(
+            "meta",
+            "muse-spark-1.2-contributor"
+        ),
+        Some(1_000_000)
+    );
+}
+
+#[test]
 fn cerebras_profile_exposes_live_chat_models_before_catalog_refresh() {
     assert_eq!(
         jcode_provider_metadata::CEREBRAS_PROFILE.default_model,

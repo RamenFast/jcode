@@ -480,6 +480,14 @@ pub fn openai_compatible_profile_static_models(profile: OpenAiCompatibleProfile)
             push("MiniMax-M2.1-highspeed");
             push("MiniMax-M2");
         }
+        // Meta's live catalog exposes both contributor and standard Muse Spark
+        // routes. Keep contributor first because it is the requested default and
+        // the lower-cost route users should see immediately after login.
+        "meta" => {
+            push("muse-spark-1.2-contributor");
+            push("muse-spark-1.2");
+            push("muse-spark-1.1");
+        }
         "alibaba-coding-plan" => {
             push("qwen3-coder-plus");
             push("qwen3.5-plus");
@@ -526,6 +534,7 @@ pub fn openai_compatible_profile_context_limit(profile_id: &str, model: &str) ->
         // direct profile runs through the OpenRouter/OpenAI-compatible provider
         // implementation, whose live catalog can be unavailable during startup.
         "deepseek" if model.starts_with("deepseek-v4-") => Some(1_000_000),
+        "meta" if model.starts_with("muse-spark-") => Some(1_000_000),
         // Fall back to the shared open-weight family classifier. Many bundled
         // OpenAI-compatible gateways (Z.AI/GLM, Moonshot/Kimi, MiniMax, Qwen,
         // etc.) serve `/v1/models` entries without a `context_length`, so this

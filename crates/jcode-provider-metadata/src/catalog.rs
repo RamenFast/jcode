@@ -316,6 +316,17 @@ pub const MINIMAX_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     requires_api_key: true,
 };
 
+pub const META_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
+    id: "meta",
+    display_name: "Meta Model API",
+    api_base: "https://api.meta.ai/v1",
+    api_key_env: "META_API_KEY",
+    env_file: "meta.env",
+    setup_url: "https://dev.meta.ai/docs/getting-started/overview",
+    default_model: Some("muse-spark-1.2-contributor"),
+    requires_api_key: true,
+};
+
 pub const XAI_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     id: "xai",
     display_name: "xAI",
@@ -432,7 +443,7 @@ pub const OPENAI_COMPAT_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfi
     requires_api_key: true,
 };
 
-pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 37] = [
+pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 38] = [
     OPENCODE_PROFILE,
     OPENCODE_GO_PROFILE,
     ZAI_PROFILE,
@@ -463,6 +474,7 @@ pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 37] = [
     DEEPINFRA_PROFILE,
     FIREWORKS_PROFILE,
     MINIMAX_PROFILE,
+    META_PROFILE,
     XAI_PROFILE,
     NVIDIA_NIM_PROFILE,
     XIAOMI_MIMO_PROFILE,
@@ -938,6 +950,19 @@ pub const MINIMAX_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescrip
     order: LoginProviderSurfaceOrder::new(Some(38), Some(38), Some(38), Some(38), Some(38)),
 };
 
+pub const META_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
+    id: "meta",
+    display_name: "Meta Model API",
+    auth_kind: LoginProviderAuthKind::ApiKey,
+    auth_state_key: LoginProviderAuthStateKey::OpenRouterLike,
+    auth_status_method: "API key",
+    aliases: &["meta-ai", "meta-model-api"],
+    menu_detail: "Muse Spark via Meta Model API",
+    recommended: false,
+    target: LoginProviderTarget::OpenAiCompatible(META_PROFILE),
+    order: LoginProviderSurfaceOrder::new(Some(39), Some(39), Some(39), Some(39), Some(39)),
+};
+
 pub const XAI_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
     id: "xai",
     display_name: "xAI",
@@ -1112,7 +1137,7 @@ pub const GOOGLE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescript
     order: LoginProviderSurfaceOrder::new(Some(13), None, None, None, None),
 };
 
-pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 48] = [
+pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 49] = [
     AUTO_IMPORT_LOGIN_PROVIDER,
     CLAUDE_LOGIN_PROVIDER,
     ANTHROPIC_API_LOGIN_PROVIDER,
@@ -1148,6 +1173,7 @@ pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 48] = [
     DEEPINFRA_LOGIN_PROVIDER,
     FIREWORKS_LOGIN_PROVIDER,
     MINIMAX_LOGIN_PROVIDER,
+    META_LOGIN_PROVIDER,
     XAI_LOGIN_PROVIDER,
     NVIDIA_NIM_LOGIN_PROVIDER,
     XIAOMI_MIMO_LOGIN_PROVIDER,
