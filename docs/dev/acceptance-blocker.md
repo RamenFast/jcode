@@ -42,8 +42,19 @@ Local logs live beside this checkout in `../checks/`: `regression-before.log`, `
 
 ## Deployment boundary
 
-The supported release installer will install this committed build for new launches, with `JCODE_SKIP_SERVER_RELOAD=1`. Running clients and the shared daemon must remain untouched. The regression tests exercise the production App scheduler and persistence boundary, not a live model session. Installation and launcher probes are recorded separately after the build.
+The supported release installer installed build `7c82a17` for new launches, with `JCODE_SKIP_SERVER_RELOAD=1`. Running clients and the shared daemon remain untouched. The regression tests exercise the production App scheduler and persistence boundary, not a live model session.
 
 ## Installer path correction
 
 The optimized build passed. Its installer then failed before pointer changes because the version probe did not quote the executable path. The physical checkout path contains `Mass storage`. Quoting `"$bin"` fixes this actual installation failure. `bash -n` and the quoted version probe pass against the built executable. The supported installer is rerun after committing the one-line correction.
+
+
+## Installed result
+
+`jcode version --json` reports `v0.81.9-dev (7c82a17)`, with base and update version `0.81.7`. The development display version advances with local commits. This is an optimized local repair, not an upstream v0.81.9 release.
+
+`jcode provider current --json` resolves OpenAI with `gpt-6-astra`. `jcode model list --json` includes Astra. The config hash is unchanged, including Astra high. The installed executable matches the release build byte-for-byte.
+
+Current and stable point at the new immutable executable. The old executable hash, shared-server pointers, older checkout HEAD/status, and all three recorded Jcode processes are unchanged or still present. No active process was restarted. Receipt: `../checks/install-verified.json`. Recovery: `../RECOVERY.md`.
+
+The first build hit the runner's ten-minute cap before installation. Resuming reused its dependency cache. The next attempt exposed the quoted-path installer bug. The corrected supported installer completed with exit zero. No unchanged failed acceptance checks were repeated.
