@@ -43,3 +43,7 @@ Local logs live beside this checkout in `../checks/`: `regression-before.log`, `
 ## Deployment boundary
 
 The supported release installer will install this committed build for new launches, with `JCODE_SKIP_SERVER_RELOAD=1`. Running clients and the shared daemon must remain untouched. The regression tests exercise the production App scheduler and persistence boundary, not a live model session. Installation and launcher probes are recorded separately after the build.
+
+## Installer path correction
+
+The optimized build passed. Its installer then failed before pointer changes because the version probe did not quote the executable path. The physical checkout path contains `Mass storage`. Quoting `"$bin"` fixes this actual installation failure. `bash -n` and the quoted version probe pass against the built executable. The supported installer is rerun after committing the one-line correction.
