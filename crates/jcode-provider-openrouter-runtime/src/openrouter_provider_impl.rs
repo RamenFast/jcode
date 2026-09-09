@@ -41,6 +41,9 @@ impl Provider for OpenRouterProvider {
         system: &str,
         _resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
+        if self.profile_id.as_deref() == Some("xai-oauth") {
+            return super::xai_oauth::complete(self, messages, tools, system).await;
+        }
         let model = self.model.read().await.clone();
         let reasoning_effort = self.reasoning_effort();
         let thinking_override = Self::thinking_override();
@@ -483,6 +486,9 @@ impl Provider for OpenRouterProvider {
         }
         let requested = effort.trim().to_ascii_lowercase();
         let mut accepted = self.available_efforts().contains(&requested.as_str());
+        if self.profile_id.as_deref() == Some("xai-oauth") && self.model_snapshot() == "grok-4.6" && requested == "max" {
+            accepted = true;
+        }
         if !self.supports_deepseek_reasoning_effort()
             && !self.supports_openai_reasoning_effort()
             && requested == "max"
@@ -505,6 +511,9 @@ impl Provider for OpenRouterProvider {
     }
 
     fn available_efforts(&self) -> Vec<&'static str> {
+        if self.profile_id.as_deref() == Some("xai-oauth") {
+            return if self.model_snapshot() == "grok-4.6" { vec!["low", "medium", "high", "xhigh"] } else { vec![] };
+        }
         if self.supports_deepseek_reasoning_effort() {
             jcode_provider_core::DEEPSEEK_SELECTABLE_EFFORTS.to_vec()
         } else if self.supports_openai_reasoning_effort() {

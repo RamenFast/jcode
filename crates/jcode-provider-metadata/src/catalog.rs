@@ -349,6 +349,18 @@ pub const XAI_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     requires_api_key: true,
 };
 
+pub const XAI_OAUTH_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
+    id: "xai-oauth",
+    display_name: "xAI OAuth",
+    api_base: "https://api.x.ai/v1",
+    // This profile never loads an environment key. Authentication is native OAuth.
+    api_key_env: "JCODE_XAI_OAUTH_UNUSED",
+    env_file: "xai-oauth-unused.env",
+    setup_url: "https://accounts.x.ai",
+    default_model: Some("grok-4.6"),
+    requires_api_key: true,
+};
+
 pub const LMSTUDIO_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     id: "lmstudio",
     display_name: "LM Studio",
@@ -478,7 +490,7 @@ pub const OPENAI_COMPAT_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfi
     requires_api_key: true,
 };
 
-pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 41] = [
+pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 42] = [
     OPENCODE_PROFILE,
     OPENCODE_GO_PROFILE,
     ZAI_PROFILE,
@@ -513,6 +525,7 @@ pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 41] = [
     FIREWORKS_PROFILE,
     MINIMAX_PROFILE,
     XAI_PROFILE,
+    XAI_OAUTH_PROFILE,
     NVIDIA_NIM_PROFILE,
     XIAOMI_MIMO_PROFILE,
     META_MUSE_PROFILE,
@@ -1040,6 +1053,19 @@ pub const XAI_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor 
     order: LoginProviderSurfaceOrder::new(Some(33), Some(33), Some(33), Some(33), Some(33)),
 };
 
+pub const XAI_OAUTH_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
+    id: "xai-oauth",
+    display_name: "xAI OAuth",
+    auth_kind: LoginProviderAuthKind::OAuth,
+    auth_state_key: LoginProviderAuthStateKey::OpenRouterLike,
+    auth_status_method: "native OAuth",
+    aliases: &["grok-oauth", "x-ai-oauth"],
+    menu_detail: "Native xAI OAuth, Jcode tools (no Grok CLI)",
+    recommended: false,
+    target: LoginProviderTarget::OpenAiCompatible(XAI_OAUTH_PROFILE),
+    order: LoginProviderSurfaceOrder::new(Some(55), Some(55), Some(55), Some(55), Some(55)),
+};
+
 /// Grok Build is intentionally a separate identity from `xai`: Jcode manages
 /// its subscription backend and never consumes `XAI_API_KEY`.
 pub const GROK_BUILD_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
@@ -1229,7 +1255,7 @@ pub const GOOGLE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescript
     order: LoginProviderSurfaceOrder::new(Some(13), None, None, None, None),
 };
 
-pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 53] = [
+pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 54] = [
     AUTO_IMPORT_LOGIN_PROVIDER,
     CLAUDE_LOGIN_PROVIDER,
     ANTHROPIC_API_LOGIN_PROVIDER,
@@ -1269,6 +1295,7 @@ pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 53] = [
     FIREWORKS_LOGIN_PROVIDER,
     MINIMAX_LOGIN_PROVIDER,
     XAI_LOGIN_PROVIDER,
+    XAI_OAUTH_LOGIN_PROVIDER,
     GROK_BUILD_LOGIN_PROVIDER,
     NVIDIA_NIM_LOGIN_PROVIDER,
     XIAOMI_MIMO_LOGIN_PROVIDER,

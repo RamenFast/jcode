@@ -1,6 +1,9 @@
 fn generic_credential_paths_for_provider(
     provider: crate::provider_catalog::LoginProviderDescriptor,
 ) -> Vec<String> {
+    if provider.id == crate::auth::xai_oauth::ID {
+        return crate::auth::xai_oauth::credentials_path().into_iter().map(|p| p.display().to_string()).collect();
+    }
     let Ok(config_dir) = crate::storage::app_config_dir() else {
         return Vec::new();
     };

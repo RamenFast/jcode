@@ -298,6 +298,7 @@ fn configured_allow_no_auth() -> bool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpenRouterTransportState {
+    DirectOAuth,
     /// Real OpenRouter BYOK. The provider implementation is both the runtime identity
     /// and the HTTP transport.
     OpenRouterApiKey,
@@ -313,6 +314,9 @@ pub enum OpenRouterTransportState {
 
 impl OpenRouterTransportState {
     pub fn from_current_env(runtime_provider: Option<&str>) -> Self {
+        if runtime_provider == Some("xai-oauth") || std::env::var("JCODE_OPENROUTER_CACHE_NAMESPACE").as_deref() == Ok("xai-oauth") {
+            return Self::DirectOAuth;
+        }
         if let Some(state) = Self::from_env_marker() {
             return state;
         }
@@ -463,6 +467,7 @@ pub(crate) const OPENCODE_SESSION_HEADER: &str = "x-opencode-session";
 
 #[derive(Debug, Clone)]
 enum ProviderAuth {
+    XaiOAuth,
     AuthorizationBearer {
         token: String,
         label: String,
@@ -483,6 +488,11 @@ enum ProviderAuth {
 impl ProviderAuth {
     async fn apply(&self, req: reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder> {
         match self {
+            Self::XaiOAuth => {
+                let request = req.try_clone().context("Cannot inspect xAI OAuth request")?.build()?;
+                xai_oauth::validate_api_url(request.url())?;
+                Ok(req.bearer_auth(jcode_base::auth::xai_oauth::access_token(None).await?))
+            }
             Self::AuthorizationBearer { token, .. } => Ok(req.bearer_auth(token)),
             Self::HeaderValue {
                 header_name, value, ..
@@ -497,6 +507,7 @@ impl ProviderAuth {
 
     fn label(&self) -> &str {
         match self {
+            Self::XaiOAuth => "native xAI OAuth",
             Self::AuthorizationBearer { label, .. } => label,
             Self::HeaderValue { label, .. } => label,
             Self::AzureEntra { label } => label,
@@ -544,7 +555,9 @@ async fn fetch_models_from_api(
     cache_namespace: Option<String>,
 ) -> Result<Vec<ModelInfo>> {
     let url = format!("{}/models", api_base);
-    let response =
+    let response = if matches!(auth, ProviderAuth::XaiOAuth) {
+        xai_oauth::catalog(&url).await?
+    } else {
         apply_kimi_coding_agent_headers(auth.apply(client.get(&url)).await?, &api_base, None)
             .send()
             .await
@@ -554,7 +567,8 @@ async fn fetch_models_from_api(
                     url,
                     auth.label()
                 )
-            })?;
+            })?
+    };
 
     if !response.status().is_success() {
         let status = response.status();
@@ -582,6 +596,9 @@ async fn fetch_models_from_api(
         })?;
 
     let ns = cache_namespace.as_deref();
+    if ns == Some("xai-oauth") {
+        models.retain(|model| jcode_base::provider_catalog::openai_compatible_profile_model_supports_chat("xai-oauth", &model.id));
+    }
     ollama_context::maybe_enrich(&client, &api_base, ns, &mut models).await;
     if let Some(namespace) = ns {
         save_disk_cache_with_source_for_namespace(namespace, &models, Some(&api_base));
@@ -724,7 +741,9 @@ pub fn maybe_schedule_openai_compatible_profile_catalog_refresh(
         finish_profile_catalog_refresh(&resolved.id);
         return false;
     };
-    let auth = if let Some(key) =
+    let auth = if resolved.id == jcode_base::auth::xai_oauth::ID {
+        ProviderAuth::XaiOAuth
+    } else if let Some(key) =
         load_api_key_from_env_or_config(&resolved.api_key_env, &resolved.env_file)
     {
         ProviderAuth::AuthorizationBearer {
@@ -948,7 +967,7 @@ impl OpenRouterProvider {
     }
 
     fn profile_supports_openai_reasoning_effort(profile_id: Option<&str>) -> bool {
-        matches!(profile_id, Some(id) if id.eq_ignore_ascii_case("zai"))
+        matches!(profile_id, Some(id) if id.eq_ignore_ascii_case("zai") || id == "xai-oauth")
     }
 
     /// DeepSeek-family models accept the DeepSeek-style top-level
@@ -1000,6 +1019,9 @@ impl OpenRouterProvider {
     /// reasoning models, and only when no explicit config override or
     /// DeepSeek-style support already applies.
     pub(crate) fn supports_openai_reasoning_effort(&self) -> bool {
+        if self.profile_id.as_deref() == Some("xai-oauth") {
+            return self.model_snapshot() == "grok-4.6";
+        }
         if let Some(explicit) = self.model_reasoning_support() {
             return explicit;
         }
@@ -1055,6 +1077,13 @@ impl OpenRouterProvider {
     }
 
     pub(crate) fn normalize_reasoning_effort_for_self(&self, effort: &str) -> Option<String> {
+        if self.profile_id.as_deref() == Some("xai-oauth") {
+            return match effort.trim().to_ascii_lowercase().as_str() {
+                "low" | "medium" | "high" | "xhigh" => Some(effort.trim().to_ascii_lowercase()),
+                "max" => Some("xhigh".to_string()),
+                _ => None,
+            };
+        }
         if self.supports_deepseek_reasoning_effort() {
             Self::normalize_reasoning_effort(effort)
         } else if self.supports_openai_reasoning_effort() {
@@ -1585,6 +1614,9 @@ impl OpenRouterProvider {
     }
 
     pub fn new() -> Result<Self> {
+        if std::env::var("JCODE_OPENROUTER_CACHE_NAMESPACE").as_deref() == Ok("xai-oauth") {
+            return Self::new_openai_compatible_profile_runtime(jcode_base::provider_catalog::XAI_OAUTH_PROFILE);
+        }
         let autodetected_profile = autodetected_openai_compatible_profile();
         let api_base = configured_api_base();
         let supports_provider_features = provider_features_enabled(&api_base);
@@ -1738,7 +1770,13 @@ impl OpenRouterProvider {
                 resolved.api_base
             )
         })?;
-        let auth = match load_api_key_from_env_or_config(&resolved.api_key_env, &resolved.env_file)
+        let auth = if resolved.id == jcode_base::auth::xai_oauth::ID {
+            xai_oauth::validate_api_url(&reqwest::Url::parse(&api_base)?)?;
+            if !jcode_base::auth::xai_oauth::has_credentials() {
+                anyhow::bail!("xAI OAuth credentials unavailable. Run `jcode login --provider xai-oauth`.");
+            }
+            ProviderAuth::XaiOAuth
+        } else { match load_api_key_from_env_or_config(&resolved.api_key_env, &resolved.env_file)
         {
             Some(token) => ProviderAuth::AuthorizationBearer {
                 token,
@@ -1759,6 +1797,7 @@ impl OpenRouterProvider {
                     resolved.id,
                 );
             }
+        }
         };
 
         let static_context_limits = openai_compatible_profile_static_context_limits(profile);
@@ -2419,6 +2458,9 @@ impl OpenRouterProvider {
 
     /// Check if OPENROUTER_API_KEY is available (env var or config file)
     pub fn has_credentials() -> bool {
+        if std::env::var("JCODE_OPENROUTER_CACHE_NAMESPACE").as_deref() == Ok("xai-oauth") {
+            return jcode_base::auth::xai_oauth::has_credentials();
+        }
         if matches!(
             configured_dynamic_bearer_provider().as_deref(),
             Some("azure")
@@ -2775,6 +2817,7 @@ impl OpenRouterProvider {
 }
 
 mod models_catalog_parse;
+mod xai_oauth;
 mod ollama_context;
 #[path = "openrouter_provider_impl.rs"]
 mod openrouter_provider_impl;

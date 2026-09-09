@@ -648,7 +648,15 @@ async fn populate_generic_auth_test_report(
     mut report: AuthTestProviderReport,
 ) -> AuthTestProviderReport {
     super::provider_init::apply_login_provider_profile_env(provider);
-    probe_generic_provider_auth(provider, &mut report);
+    if provider.id == crate::auth::xai_oauth::ID {
+        report.push_step("credential_probe", crate::auth::xai_oauth::has_credentials(), "Native Jcode xAI OAuth credential check. No API-key fallback.");
+        match crate::auth::xai_oauth::access_token(None).await {
+            Ok(_) => report.push_step("refresh_probe", true, "Native xAI access token is usable after expiry-aware refresh check."),
+            Err(error) => report.push_step("refresh_probe", false, error.to_string()),
+        }
+    } else {
+        probe_generic_provider_auth(provider, &mut report);
+    }
 
     maybe_run_auth_test_smoke_for_choice(
         &mut report,

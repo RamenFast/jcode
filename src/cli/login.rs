@@ -15,6 +15,7 @@ mod existing_key_notice;
 mod jcode_device;
 mod next_step;
 mod scriptable;
+mod xai_oauth;
 use scriptable::*;
 
 #[derive(Debug, Clone, Default)]
@@ -245,7 +246,9 @@ pub async fn run_login_provider(
             ),
         ],
     );
-    let login_result = if explicit_scriptable_flow {
+    let login_result = if provider.id == auth::xai_oauth::ID {
+        xai_oauth::login(&options).await
+    } else if explicit_scriptable_flow {
         run_scriptable_login_provider(provider, account_label, &options).await
     } else if let Some(reason) = auto_scriptable_reason {
         crate::telemetry::record_auth_surface_blocked_reason(
@@ -432,6 +435,9 @@ fn maybe_persist_default_provider_after_login(
     provider: LoginProviderDescriptor,
     options: &LoginOptions,
 ) {
+    if provider.id == auth::xai_oauth::ID {
+        return;
+    }
     let cfg = crate::config::Config::load();
     if cfg.provider.default_provider.is_some() {
         return;

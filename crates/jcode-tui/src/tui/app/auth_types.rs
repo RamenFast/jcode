@@ -1,5 +1,6 @@
 #[derive(Debug, Clone)]
 pub(crate) enum PendingLogin {
+    XaiOAuth { task: std::sync::Arc<XaiLoginAbort> },
     /// Waiting for user to paste Claude OAuth code for a specific stored account
     ClaudeAccount {
         verifier: String,
@@ -88,6 +89,7 @@ impl PendingLogin {
             Self::CursorApiKey => Some(("cursor".to_string(), "api_key".to_string())),
             Self::Copilot => Some(("copilot".to_string(), "device_code".to_string())),
             Self::GrokBuild => Some(("grok-build".to_string(), "oauth".to_string())),
+            Self::XaiOAuth { .. } => Some(("xai-oauth".to_string(), "oauth".to_string())),
             Self::AutoImportSelection { .. } => None,
             Self::AzureEndpoint | Self::AzureModel { .. } | Self::AzureAuthChoice { .. } => {
                 Some(("azure".to_string(), "hybrid".to_string()))
@@ -95,6 +97,13 @@ impl PendingLogin {
             Self::AzureApiKey { .. } => Some(("azure".to_string(), "api_key".to_string())),
         }
     }
+}
+
+#[derive(Debug)]
+pub(crate) struct XaiLoginAbort(pub tokio::task::AbortHandle);
+
+impl Drop for XaiLoginAbort {
+    fn drop(&mut self) { self.0.abort(); }
 }
 
 #[derive(Debug, Clone)]

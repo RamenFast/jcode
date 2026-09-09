@@ -58,6 +58,9 @@ pub(crate) fn maybe_schedule_standard_openrouter_catalog_refresh(context: &'stat
 
 /// Whether OpenRouter/OpenAI-compatible credentials are available.
 pub fn has_credentials() -> bool {
+    if std::env::var("JCODE_OPENROUTER_CACHE_NAMESPACE").as_deref() == Ok("xai-oauth") {
+        return crate::auth::xai_oauth::has_credentials();
+    }
     if matches!(
         configured_dynamic_bearer_provider().as_deref(),
         Some("azure")
@@ -234,6 +237,7 @@ fn configured_allow_no_auth() -> bool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpenRouterTransportState {
+    DirectOAuth,
     /// Real OpenRouter BYOK. The provider implementation is both the runtime identity
     /// and the HTTP transport.
     OpenRouterApiKey,
@@ -249,6 +253,9 @@ pub enum OpenRouterTransportState {
 
 impl OpenRouterTransportState {
     pub fn from_current_env(runtime_provider: Option<&str>) -> Self {
+        if runtime_provider == Some("xai-oauth") || std::env::var("JCODE_OPENROUTER_CACHE_NAMESPACE").as_deref() == Ok("xai-oauth") {
+            return Self::DirectOAuth;
+        }
         if let Some(state) = Self::from_env_marker() {
             return state;
         }

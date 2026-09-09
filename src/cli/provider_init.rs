@@ -92,6 +92,9 @@ pub enum ProviderChoice {
     Minimax,
     #[value(alias = "x.ai", alias = "x-ai", alias = "grok")]
     Xai,
+    /// Native xAI OAuth with direct HTTP inference and Jcode-owned tools.
+    #[value(name = "xai-oauth", alias = "grok-oauth", alias = "x-ai-oauth")]
+    XaiOauth,
     /// Grok Build subscription via the authenticated Grok CLI ACP transport.
     #[value(name = "grok-build")]
     GrokBuild,
@@ -179,6 +182,7 @@ impl ProviderChoice {
             Self::Fireworks => "fireworks",
             Self::Minimax => "minimax",
             Self::Xai => "xai",
+            Self::XaiOauth => "xai-oauth",
             Self::GrokBuild => "grok-build",
             Self::NvidiaNim => "nvidia-nim",
             Self::XiaomiMimo => "xiaomi-mimo",
@@ -339,6 +343,10 @@ const PROVIDER_CHOICE_LOGIN_PROVIDERS: &[(ProviderChoice, LoginProviderDescripto
     (
         ProviderChoice::Xai,
         crate::provider_catalog::XAI_LOGIN_PROVIDER,
+    ),
+    (
+        ProviderChoice::XaiOauth,
+        crate::provider_catalog::XAI_OAUTH_LOGIN_PROVIDER,
     ),
     (
         ProviderChoice::GrokBuild,
@@ -1589,6 +1597,7 @@ async fn init_provider_with_options(
         | ProviderChoice::Fireworks
         | ProviderChoice::Minimax
         | ProviderChoice::Xai
+        | ProviderChoice::XaiOauth
         | ProviderChoice::NvidiaNim
         | ProviderChoice::XiaomiMimo
         | ProviderChoice::MetaMuse

@@ -558,7 +558,8 @@ impl App {
             crate::provider_catalog::LoginProviderTarget::Bedrock => self.start_bedrock_login(),
             crate::provider_catalog::LoginProviderTarget::Azure => self.start_azure_login(),
             crate::provider_catalog::LoginProviderTarget::OpenAiCompatible(profile) => {
-                self.start_openai_compatible_profile_login(profile)
+                if profile.id == "xai-oauth" { self.start_xai_oauth_login() }
+                else { self.start_openai_compatible_profile_login(profile) }
             }
             crate::provider_catalog::LoginProviderTarget::Cursor => self.start_cursor_login(),
             crate::provider_catalog::LoginProviderTarget::GrokBuild => {
@@ -1773,6 +1774,35 @@ impl App {
         ));
     }
 
+    fn start_xai_oauth_login(&mut self) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            self.push_display_message(DisplayMessage::error("xAI login requires the async runtime. Use `jcode login --provider xai-oauth`."));
+            return;
+        };
+        self.set_status_notice("xAI OAuth: preparing device login");
+        let session_id = self.session.id.clone();
+        let task = handle.spawn(async move {
+            let result: anyhow::Result<()> = async {
+                let authorization = crate::auth::xai_oauth::begin_login().await?;
+                let url = authorization.verification_uri_complete.as_deref().unwrap_or(&authorization.verification_uri);
+                let _ = Self::open_auth_browser(url);
+                Bus::global().publish(BusEvent::UiActivity(crate::bus::UiActivity::auth(
+                    Some(session_id),
+                    format!("xAI OAuth\n\nOpen: {url}\nConfirm code: {}\n\nNative HTTPS login. No Grok CLI. Type /cancel to stop waiting.", authorization.user_code),
+                    Some("xAI OAuth: waiting for approval"),
+                )));
+                crate::auth::xai_oauth::complete_login(&authorization).await
+            }.await;
+            Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
+                provider: "xai-oauth".into(), success: result.is_ok(),
+                message: match result { Ok(()) => "Native xAI OAuth saved. Refreshing model access.".into(), Err(error) => format!("xAI OAuth: {error:#}") },
+            }));
+        });
+        self.begin_pending_login(PendingLogin::XaiOAuth {
+            task: std::sync::Arc::new(auth_types::XaiLoginAbort(task.abort_handle())),
+        });
+    }
+
     fn start_grok_build_login(&mut self) {
         self.set_status_notice("Grok Build: preparing sign-in...");
         self.begin_pending_login(PendingLogin::GrokBuild);
@@ -2690,6 +2720,10 @@ impl App {
                         .to_string(),
                 ));
                 self.pending_login = Some(PendingLogin::GrokBuild);
+            }
+            PendingLogin::XaiOAuth { task } => {
+                self.push_display_message(DisplayMessage::system("xAI OAuth is waiting for browser approval. Type /cancel to stop waiting."));
+                self.pending_login = Some(PendingLogin::XaiOAuth { task });
             }
             PendingLogin::AutoImportSelection { candidates } => {
                 let selected = match crate::external_auth::parse_external_auth_review_selection(

@@ -25,6 +25,7 @@ mod status_types;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_sandbox;
 pub mod validation;
+pub mod xai_oauth;
 
 pub(crate) use commands::command_exists;
 #[cfg(test)]
@@ -475,6 +476,14 @@ impl AuthStatus {
     }
 
     pub fn state_for_provider(&self, provider: LoginProviderDescriptor) -> AuthState {
+        if provider.id == xai_oauth::ID {
+            return match xai_oauth::load() {
+                Ok(credentials) if credentials.blocked.is_none() => {
+                    if credentials.expires_at <= chrono::Utc::now().timestamp() { AuthState::Expired } else { AuthState::Available }
+                }
+                _ => AuthState::NotConfigured,
+            };
+        }
         match provider.target {
             crate::provider_catalog::LoginProviderTarget::AutoImport => {
                 if Self::has_any_untrusted_external_auth() {
@@ -547,6 +556,11 @@ impl AuthStatus {
     }
 
     pub fn method_detail_for_provider(&self, provider: LoginProviderDescriptor) -> String {
+        if provider.id == xai_oauth::ID {
+            return if xai_oauth::has_credentials() {
+                "native OAuth (~/.jcode/xai-oauth.json)".to_string()
+            } else { "not configured; run jcode login --provider xai-oauth".to_string() };
+        }
         match provider.target {
             crate::provider_catalog::LoginProviderTarget::AutoImport => {
                 if Self::has_any_untrusted_external_auth() {
@@ -710,6 +724,14 @@ impl AuthStatus {
             refresh_support,
             validation_method,
         ) = match provider.target {
+            crate::provider_catalog::LoginProviderTarget::OpenAiCompatible(profile)
+                if profile.id == xai_oauth::ID => (
+                if xai_oauth::has_credentials() { AuthCredentialSource::JcodeManagedFile } else { AuthCredentialSource::None },
+                "~/.jcode/xai-oauth.json (native xAI OAuth)".to_string(),
+                AuthExpiryConfidence::Exact,
+                AuthRefreshSupport::Automatic,
+                AuthValidationMethod::TimestampCheck,
+            ),
             crate::provider_catalog::LoginProviderTarget::AutoImport => (
                 if Self::has_any_untrusted_external_auth() {
                     AuthCredentialSource::TrustedExternalFile

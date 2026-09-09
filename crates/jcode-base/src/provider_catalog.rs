@@ -349,6 +349,7 @@ pub fn openai_compatible_profile_static_models(profile: OpenAiCompatibleProfile)
     };
 
     match profile.id {
+        "xai-oauth" => push("grok-4.6"),
         "opencode" => {
             push("minimax-m2.7");
             push("kimi-k2.5");
@@ -648,7 +649,11 @@ pub fn openai_compatible_profile_static_models(profile: OpenAiCompatibleProfile)
     models
 }
 
-pub fn openai_compatible_profile_model_supports_chat(_profile_id: &str, _model: &str) -> bool {
+pub fn openai_compatible_profile_model_supports_chat(profile_id: &str, model: &str) -> bool {
+    if profile_id == "xai-oauth" {
+        let model = model.to_ascii_lowercase();
+        return model.starts_with("grok-") && !["imagine", "image", "video", "voice", "audio", "embedding"].iter().any(|kind| model.contains(kind));
+    }
     true
 }
 
@@ -668,6 +673,7 @@ pub fn openai_compatible_profile_context_limit(profile_id: &str, model: &str) ->
     let model = model.trim().to_ascii_lowercase();
 
     match profile_id.as_str() {
+        "xai-oauth" if model == "grok-4.6" => Some(500_000),
         // The selected upstream model may vary. Use Jcode's conservative
         // compatible-provider context budget for the Belvedir auto router.
         "belvedir" if model == "auto" => Some(128_000),
@@ -1108,6 +1114,9 @@ fn parse_bool_like(value: &str) -> bool {
 }
 
 pub fn openai_compatible_profile_is_configured(profile: OpenAiCompatibleProfile) -> bool {
+    if profile.id == crate::auth::xai_oauth::ID {
+        return crate::auth::xai_oauth::has_credentials();
+    }
     // When a named config profile (`[providers.<name>]`, selected via
     // `--provider-profile`) is active, its credentials live under the runtime
     // env vars set by `apply_named_provider_profile_env`, not the built-in
