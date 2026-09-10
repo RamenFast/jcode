@@ -8,6 +8,87 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 #[test]
+fn bash_input_bool_defaults_preserve_omitted_and_explicit_values() {
+    let omitted: BashInput = serde_json::from_value(json!({"command": "echo ok"})).unwrap();
+    assert!(omitted.notify);
+    assert!(!omitted.wake);
+    for notify in [false, true] {
+        for wake in [false, true] {
+            let input: BashInput = serde_json::from_value(json!({
+                "command": "echo ok", "notify": notify, "wake": wake
+            }))
+            .unwrap();
+            assert_eq!(input.notify, notify);
+            assert_eq!(input.wake, wake);
+        }
+    }
+}
+
+#[test]
+fn bash_input_null_bools_use_field_defaults() {
+    for fields in [
+        json!({"notify": null}),
+        json!({"wake": null}),
+        json!({"notify": null, "wake": null}),
+    ] {
+        let mut value = json!({"command": "echo ok"});
+        value
+            .as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        let input: BashInput = serde_json::from_value(value).unwrap();
+        assert!(input.notify);
+        assert!(!input.wake);
+    }
+}
+
+#[test]
+fn bash_input_bool_defaults_reject_nonbool_values() {
+    for field in ["notify", "wake"] {
+        for invalid in [
+            json!(0),
+            json!(1),
+            json!("false"),
+            json!("true"),
+            json!([]),
+            json!({}),
+        ] {
+            let mut value = json!({"command": "echo ok"});
+            value[field] = invalid;
+            assert!(
+                serde_json::from_value::<BashInput>(value).is_err(),
+                "{field}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn bash_input_strict_schema_null_bools_execute_real_tool() {
+    let tool = BashTool::new();
+    let schema =
+        jcode_provider_core::openai_schema::strict_normalize_schema(&tool.parameters_schema());
+    let mut input = json!({"command": "echo JCODE_TOOL_OK"});
+    for field in schema["required"].as_array().unwrap() {
+        let name = field.as_str().unwrap();
+        if name != "command" {
+            assert!(
+                schema["properties"][name].to_string().contains("null"),
+                "{name}"
+            );
+            input[name] = Value::Null;
+        }
+    }
+    assert_eq!(input["notify"], Value::Null);
+    assert_eq!(input["wake"], Value::Null);
+    let parsed: BashInput = serde_json::from_value(input.clone()).unwrap();
+    assert!(parsed.notify);
+    assert!(!parsed.wake);
+    let result = tool.execute(input, make_ctx(None)).await.unwrap();
+    assert!(result.output.contains("JCODE_TOOL_OK"));
+}
+
+#[test]
 fn repository_commands_export_a_logged_cargo_function() {
     let repo =
         crate::build::find_repo_in_ancestors(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))

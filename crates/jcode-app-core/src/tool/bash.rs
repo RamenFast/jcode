@@ -818,9 +818,12 @@ struct BashInput {
     timeout: Option<u64>,
     #[serde(default)]
     run_in_background: Option<bool>,
-    #[serde(default = "default_true")]
+    #[serde(
+        default = "default_true",
+        deserialize_with = "bool_or_default::<_, true>"
+    )]
     notify: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "bool_or_default::<_, false>")]
     wake: bool,
     /// For background runs: wake the agent after this many seconds with no
     /// new output and no progress events. Resets on activity.
@@ -833,6 +836,13 @@ struct BashInput {
 
 fn default_true() -> bool {
     true
+}
+
+fn bool_or_default<'de, D, const DEFAULT: bool>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<bool>::deserialize(deserializer)?.unwrap_or(DEFAULT))
 }
 
 #[path = "bash_destructive_gate.rs"]
