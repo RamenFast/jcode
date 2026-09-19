@@ -108,11 +108,18 @@ pub(crate) fn parse_openai_model_catalog(data: &serde_json::Value) -> OpenAIMode
 
         available.insert(slug.clone());
 
-        if let Some(ctx) = model
-            .get("context_window")
-            .or_else(|| model.get("context_length"))
-            .and_then(|c| c.as_u64())
-        {
+        // Daybreak's OAuth catalog exposes its larger supported window separately.
+        // Keep other models' existing budgets, and trust a future lower maximum.
+        let daybreak_max = (slug == "gpt-daybreak-blue-latest")
+            .then(|| model.get("max_context_window").and_then(|c| c.as_u64()))
+            .flatten()
+            .filter(|ctx| *ctx > 0);
+        if let Some(ctx) = daybreak_max.or_else(|| {
+            model
+                .get("context_window")
+                .or_else(|| model.get("context_length"))
+                .and_then(|c| c.as_u64())
+        }) {
             limits.insert(slug.clone(), ctx as usize);
         }
 
@@ -160,7 +167,7 @@ pub async fn fetch_openai_model_catalog(access_token: &str) -> Result<OpenAIMode
 
     let client = shared_http_client();
     let resp = client
-        .get("https://chatgpt.com/backend-api/codex/models?client_version=1.0.0")
+        .get("https://chatgpt.com/backend-api/codex/models?client_version=0.0.0")
         .header("Authorization", format!("Bearer {}", access_token))
         .timeout(CATALOG_REQUEST_TIMEOUT)
         .send()
@@ -336,6 +343,49 @@ pub async fn fetch_openai_api_key_model_catalog(api_key: &str) -> Result<OpenAIM
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn daybreak_catalog_uses_supported_maximum_without_expanding_other_models() {
+        let catalog = parse_openai_model_catalog(&serde_json::json!({
+            "models": [
+                { "slug": "gpt-daybreak-blue-latest", "context_window": 272000,
+                  "max_context_window": 872000 },
+                { "slug": "gpt-5.6-sol", "context_window": 272000,
+                  "max_context_window": 872000 }
+            ]
+        }));
+        assert_eq!(catalog.context_limits["gpt-daybreak-blue-latest"], 872000);
+        assert_eq!(catalog.context_limits["gpt-5.6-sol"], 272000);
+    }
+
+    #[test]
+    fn daybreak_catalog_falls_back_when_maximum_is_missing_or_invalid() {
+        for maximum in [
+            serde_json::Value::Null,
+            serde_json::json!(0),
+            serde_json::json!(-1),
+            serde_json::json!("872000"),
+        ] {
+            let catalog = parse_openai_model_catalog(&serde_json::json!({
+                "models": [{ "slug": "gpt-daybreak-blue-latest",
+                    "context_window": 272000, "max_context_window": maximum }]
+            }));
+            assert_eq!(catalog.context_limits["gpt-daybreak-blue-latest"], 272000);
+        }
+        let catalog = parse_openai_model_catalog(&serde_json::json!({
+            "models": [{ "slug": "gpt-daybreak-blue-latest", "context_length": 272000 }]
+        }));
+        assert_eq!(catalog.context_limits["gpt-daybreak-blue-latest"], 272000);
+    }
+
+    #[test]
+    fn daybreak_catalog_honors_a_lower_live_maximum() {
+        let catalog = parse_openai_model_catalog(&serde_json::json!({
+            "models": [{ "slug": "gpt-daybreak-blue-latest", "context_window": 272000,
+                "max_context_window": 128000 }]
+        }));
+        assert_eq!(catalog.context_limits["gpt-daybreak-blue-latest"], 128000);
+    }
 
     #[test]
     fn openai_catalog_parses_string_and_object_reasoning_efforts() {
