@@ -449,6 +449,7 @@ fn test_handle_turn_error_failover_prompt_manual_mode_shows_system_notice() {
             from_label: "Anthropic".to_string(),
             to_provider: "openai".to_string(),
             to_label: "OpenAI".to_string(),
+            to_model: None,
             reason: "OAuth usage exhausted".to_string(),
             estimated_input_chars: 48_000,
             estimated_input_tokens: 12_000,
@@ -478,6 +479,7 @@ fn test_handle_turn_error_failover_prompt_countdown_can_switch_and_retry() {
             from_label: "Anthropic".to_string(),
             to_provider: "openai".to_string(),
             to_label: "OpenAI".to_string(),
+            to_model: None,
             reason: "OAuth usage exhausted".to_string(),
             estimated_input_chars: 32_000,
             estimated_input_tokens: 8_000,
@@ -492,7 +494,11 @@ fn test_handle_turn_error_failover_prompt_countdown_can_switch_and_retry() {
         app.maybe_progress_provider_failover_countdown();
 
         assert!(app.pending_provider_failover.is_none());
-        assert!(app.pending_turn);
+        assert!(
+            app.pending_turn,
+            "last display message: {:?}",
+            app.display_messages.last().map(|message| &message.content)
+        );
         assert_eq!(active_provider.lock().unwrap().as_str(), "openai");
         assert_eq!(app.session.model.as_deref(), Some("gpt-test"));
         let last = app.display_messages.last().expect("display message");
@@ -500,5 +506,38 @@ fn test_handle_turn_error_failover_prompt_countdown_can_switch_and_retry() {
             last.content
                 .contains("cross_provider_failover = \"manual\"")
         );
+    });
+}
+
+#[test]
+fn test_handle_turn_error_failover_prompt_applies_exact_model_route() {
+    with_temp_jcode_home(|| {
+        write_test_config("[provider]\ncross_provider_failover = \"countdown\"\n");
+        let (mut app, active_provider) = create_switchable_test_app("claude");
+        let prompt = crate::provider::ProviderFailoverPrompt {
+            from_provider: "claude".to_string(),
+            from_label: "Anthropic".to_string(),
+            to_provider: "openai".to_string(),
+            to_label: "ChatGPT OAuth (gpt-test)".to_string(),
+            to_model: Some("openai:gpt-test".to_string()),
+            reason: "OAuth usage exhausted".to_string(),
+            estimated_input_chars: 32_000,
+            estimated_input_tokens: 8_000,
+        };
+
+        app.handle_turn_error(failover_error_message(&prompt));
+        if let Some(pending) = app.pending_provider_failover.as_mut() {
+            pending.deadline = Instant::now() - Duration::from_secs(1);
+        }
+        app.maybe_progress_provider_failover_countdown();
+
+        assert!(app.pending_provider_failover.is_none());
+        assert!(
+            app.pending_turn,
+            "last display message: {:?}",
+            app.display_messages.last().map(|message| &message.content)
+        );
+        assert_eq!(active_provider.lock().unwrap().as_str(), "openai");
+        assert_eq!(app.session.model.as_deref(), Some("gpt-test"));
     });
 }

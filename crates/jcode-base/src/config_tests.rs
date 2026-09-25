@@ -679,6 +679,33 @@ fn test_provider_failover_defaults_match_new_behavior() {
         super::CrossProviderFailoverMode::Countdown
     );
     assert!(provider.same_provider_account_failover);
+    assert!(provider.fallback_models.is_none());
+}
+
+#[test]
+fn test_provider_fallback_models_parse_in_order() {
+    let cfg: Config = toml::from_str(
+        r#"
+        [provider]
+        fallback_models = [
+            "claude-oauth:claude-opus-5",
+            "openai-oauth:gpt-5.6-sol",
+            "zai:glm-5",
+            "openrouter:anthropic/claude-opus-5",
+        ]
+        "#,
+    )
+    .expect("fallback model routes should parse");
+
+    assert_eq!(
+        cfg.provider.fallback_models,
+        Some(vec![
+            "claude-oauth:claude-opus-5".to_string(),
+            "openai-oauth:gpt-5.6-sol".to_string(),
+            "zai:glm-5".to_string(),
+            "openrouter:anthropic/claude-opus-5".to_string(),
+        ])
+    );
 }
 
 #[test]

@@ -1263,12 +1263,10 @@ pub(in crate::tui::app) fn handle_server_event(
                     return false;
                 }
             }
-            let is_failover_prompt =
-                crate::provider::parse_failover_prompt_message(&message).is_some();
-            // Snapshot the failed turn's payload before the cleanup below (and
-            // the retry-budget bookkeeping) clears it, so a fallback offer
-            // armed at a terminal no-retry point can resend it after the user
-            // accepts a switch to a working route.
+            let failover_prompt = crate::provider::parse_failover_prompt_message(&message);
+            let is_failover_prompt = failover_prompt.is_some();
+            // Preserve the failed payload before cleanup so a selected fallback
+            // can resend it on the new route.
             let failed_fallback_payload = app.rate_limit_pending_message.as_ref().map(|pending| {
                 app_mod::FallbackResendPayload {
                     content: pending.content.clone(),
@@ -1279,14 +1277,16 @@ pub(in crate::tui::app) fn handle_server_event(
                     raw_input: app.last_submitted_input.clone(),
                 }
             });
-            app.push_display_message(DisplayMessage {
-                role: "error".to_string(),
-                content: message.clone(),
-                tool_calls: vec![],
-                duration_secs: None,
-                title: None,
-                tool_data: None,
-            });
+            if !is_failover_prompt {
+                app.push_display_message(DisplayMessage {
+                    role: "error".to_string(),
+                    content: message.clone(),
+                    tool_calls: vec![],
+                    duration_secs: None,
+                    title: None,
+                    tool_data: None,
+                });
+            }
             app.is_processing = false;
             app.status = ProcessingStatus::Idle;
             app.stream_message_ended = false;
@@ -1303,12 +1303,14 @@ pub(in crate::tui::app) fn handle_server_event(
             }
             remote.clear_pending();
             remote.reset_call_output_tokens_seen();
-            // Connectivity failures (DNS, connection reset, no route, transient
-            // TLS, timeouts) are always transient: the request never reached the
-            // provider. Hold the turn and resume when the network recovers,
-            // regardless of the pending message's auto_retry flag. This must run
-            // before the non-retryable auto-poke check so a transient disconnect
-            // is never misclassified as a permanent failure that stops auto-poke.
+            if let Some(prompt) = failover_prompt {
+                app.clear_pending_remote_retry();
+                app.restore_failed_input_to_box();
+                app.handle_provider_failover_prompt_with_payload(prompt, failed_fallback_payload);
+                return false;
+            }
+            // Connectivity failures never reached the provider. Hold the turn
+            // until the network recovers, before non-retryable classification.
             let is_connectivity_error =
                 crate::tui::app::commands::is_auto_poke_connectivity_error(&message)
                     || crate::network_retry::classify_message(&message).is_some();
@@ -1317,11 +1319,8 @@ pub(in crate::tui::app) fn handle_server_event(
             {
                 return false;
             }
-            // Credential-failure circuit breaker: repeated auth failures mean
-            // the login/API key is dead. Resending the identical request can
-            // never succeed and (before this breaker) produced runaway retry
-            // loops logging thousands of 401s per session. Stop every
-            // automatic resend path and tell the user to /login or /model.
+            // Repeated credential failures cannot recover through resend. Stop
+            // automatic paths and direct the user to /login or /model.
             if !is_connectivity_error && app.note_error_for_credential_breaker(&message) {
                 app.trip_credential_failure_breaker(&message);
                 app.offer_fallback_after_error_with_payload(

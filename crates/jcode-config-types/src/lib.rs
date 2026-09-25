@@ -1298,17 +1298,15 @@ pub struct ProviderConfig {
     pub preserve_reasoning_context: bool,
     /// How to handle cross-provider failover when the same input would be resent elsewhere.
     pub cross_provider_failover: CrossProviderFailoverMode,
-    /// Whether jcode should automatically try another account on the same provider
-    /// before falling back to a different provider.
+    /// Try another account on the same provider before cross-provider fallback.
     pub same_provider_account_failover: bool,
+    /// Ordered routed model specs used after account failover is exhausted.
+    pub fallback_models: Option<Vec<String>>,
     /// Copilot premium request mode: "normal", "one", or "zero"
     /// "zero" means all requests are free (no premium requests consumed)
     pub copilot_premium: Option<String>,
-    /// When set (non-empty), /model only lists routes from these providers.
-    /// Entries match provider labels ("openai", "anthropic", "copilot",
-    /// "openrouter", ...), api methods ("claude-oauth",
-    /// "openai-compatible:myprofile", ...), or openai-compatible profile ids
-    /// ("myprofile"). The active model's routes always stay visible.
+    /// Limit /model to matching provider labels, API methods, or profile ids.
+    /// The active model's routes always stay visible.
     pub model_picker_providers: Option<Vec<String>>,
     /// Max seconds to wait for streaming data before timing out a request with
     /// no data received. Base budget only: high reasoning efforts scale it up
@@ -1331,6 +1329,7 @@ impl Default for ProviderConfig {
             preserve_reasoning_context: true,
             cross_provider_failover: CrossProviderFailoverMode::Countdown,
             same_provider_account_failover: true,
+            fallback_models: None,
             copilot_premium: None,
             model_picker_providers: None,
             stream_idle_timeout_secs: 180,

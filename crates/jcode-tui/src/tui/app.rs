@@ -28,6 +28,7 @@ use debug::DebugTrace;
 use futures::StreamExt;
 use helpers::*;
 use jcode_tui_messages::DisplayMessage;
+use model_failover_approval::PendingProviderFailover;
 use ratatui::DefaultTerminal;
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -72,6 +73,7 @@ mod input_help;
 mod local;
 mod misc_ui;
 mod model_context;
+mod model_failover_approval;
 mod navigation;
 mod observe;
 pub(crate) mod onboarding_flow;
@@ -313,12 +315,6 @@ struct ModelPickerRoutesResult {
 struct PreparedTransferSession {
     session_id: String,
     session_name: String,
-}
-
-#[derive(Debug, Clone)]
-struct PendingProviderFailover {
-    prompt: crate::provider::ProviderFailoverPrompt,
-    deadline: Instant,
 }
 
 /// An interactive "switch to the next best model/method and resend" offer shown

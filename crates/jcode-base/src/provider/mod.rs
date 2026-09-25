@@ -583,8 +583,7 @@ impl MultiProvider {
             *memo = Some(entry.clone());
         }
         if let Ok(mut shared) = GLOBAL_ROUTES_MEMO.lock() {
-            // Tiny keyspace (active provider + model + profile); prune stale
-            // entries opportunistically so it cannot grow unbounded.
+            // Prune the tiny active-provider/model/profile keyspace opportunistically.
             shared.retain(|_, existing| fresh(existing));
             shared.insert(shared_key, entry.clone());
         }
@@ -606,15 +605,13 @@ impl MultiProvider {
         self.spawn_anthropic_catalog_refresh_if_needed();
         self.spawn_openai_catalog_refresh_if_needed();
 
-        // Downscale any images whose pixel dimensions exceed provider per-image
-        // limits before they reach the wire. Resuming a session with >20 large
-        // screenshots otherwise trips Anthropic's many-image 2000px cap and the
-        // whole turn is rejected (#381). Only clones when a clamp is required.
+        // Clamp oversized images before the wire to avoid Anthropic's 2000px cap (#381).
         let clamped_messages = image_clamp::clamp_outbound_images(messages);
         let messages: &[Message] = clamped_messages.as_deref().unwrap_or(messages);
 
         let active = self.active_provider();
         let sequence = Self::fallback_sequence(active);
+        let configured_model_failover = self.configured_model_failover_target(active);
         let mut notes: Vec<String> = Vec::new();
         let mut failover_reason: Option<String> = None;
         let (estimated_input_chars, estimated_input_tokens) =
@@ -624,17 +621,20 @@ impl MultiProvider {
             let label = Self::provider_label(candidate);
             let key = Self::provider_key(candidate);
 
-            if candidate != active && failover_reason.is_some() {
-                let prompt = self.build_failover_prompt(
+            if candidate != active
+                && let Some(next) = self.build_next_failover_error(
                     active,
                     candidate,
-                    failover_reason
-                        .clone()
-                        .unwrap_or_else(|| "provider unavailable".to_string()),
+                    &configured_model_failover,
+                    failover_reason.as_deref(),
                     estimated_input_chars,
                     estimated_input_tokens,
-                );
-                return Err(anyhow::anyhow!(prompt.to_error_message()));
+                )
+            {
+                let Some(error) = next else {
+                    break;
+                };
+                return Err(error);
             }
 
             if !self.provider_is_configured(candidate) {

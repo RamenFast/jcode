@@ -57,6 +57,9 @@ pub(crate) fn maybe_schedule_standard_openrouter_catalog_refresh(context: &'stat
 
 /// Whether OpenRouter/OpenAI-compatible credentials are available.
 pub fn has_credentials() -> bool {
+    if !explicit_openrouter_runtime_configured() {
+        return load_api_key_from_env_or_config(DEFAULT_API_KEY_NAME, DEFAULT_ENV_FILE).is_some();
+    }
     if matches!(
         configured_dynamic_bearer_provider().as_deref(),
         Some("azure")

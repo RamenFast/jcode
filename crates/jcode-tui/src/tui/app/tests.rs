@@ -1,6 +1,7 @@
 #![cfg_attr(test, allow(clippy::clone_on_copy))]
 include!("tests/support_failover/part_01.rs");
 include!("tests/support_failover/part_02.rs");
+include!("tests/support_failover/part_03.rs");
 include!("tests/commands_accounts_01/part_01.rs");
 include!("tests/commands_accounts_01/part_02.rs");
 include!("tests/commands_accounts_02/part_01.rs");
@@ -46,7 +47,6 @@ include!("tests/issue_496_input_routing.rs");
 include!("tests/issue_544_paste_enter.rs");
 include!("tests/issue_497_copy_ctrl_c.rs");
 include!("tests/spinner_slash_commands.rs");
-
 #[test]
 fn kv_cache_signature_prefix_match_allows_appended_messages() {
     let baseline_messages = vec![

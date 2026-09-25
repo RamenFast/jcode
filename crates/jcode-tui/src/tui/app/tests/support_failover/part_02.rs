@@ -8,6 +8,7 @@ fn test_cancel_pending_provider_failover_clears_countdown() {
             from_label: "Anthropic".to_string(),
             to_provider: "openai".to_string(),
             to_label: "OpenAI".to_string(),
+            to_model: None,
             reason: "OAuth usage exhausted".to_string(),
             estimated_input_chars: 16_000,
             estimated_input_tokens: 4_000,
@@ -102,6 +103,18 @@ impl Provider for SwitchableMockProvider {
     }
 
     fn switch_active_provider_to(&self, provider: &str) -> Result<()> {
+        *self.active_provider.lock().unwrap() = provider.to_string();
+        Ok(())
+    }
+
+    fn set_model(&self, model: &str) -> Result<()> {
+        let provider = if model.starts_with("openai:") {
+            "openai"
+        } else if model.starts_with("claude:") {
+            "claude"
+        } else {
+            anyhow::bail!("unsupported routed model {model}")
+        };
         *self.active_provider.lock().unwrap() = provider.to_string();
         Ok(())
     }

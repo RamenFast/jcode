@@ -14,7 +14,9 @@ impl App {
         }
     }
 
-    fn format_failover_input_summary(prompt: &crate::provider::ProviderFailoverPrompt) -> String {
+    pub(super) fn format_failover_input_summary(
+        prompt: &crate::provider::ProviderFailoverPrompt,
+    ) -> String {
         format!(
             "about {} input tokens (~{} chars)",
             Self::format_failover_count(prompt.estimated_input_tokens),
@@ -22,21 +24,14 @@ impl App {
         )
     }
 
-    fn failover_config_hint() -> &'static str {
+    pub(super) fn failover_config_hint() -> &'static str {
         "To turn this off, set [provider].cross_provider_failover = \"manual\" in ~/.jcode/config.toml or export JCODE_CROSS_PROVIDER_FAILOVER=manual."
     }
 
-    /// Shared post-switch bookkeeping for every local model/provider switch
-    /// path (/model, model cycling, failover, post-login activation).
-    ///
-    /// Centralized so all paths agree on what a switch means: reset provider
-    /// session ids, drop upstream/status details, invalidate the model picker
-    /// cache, update the context limit, recompute the session provider key,
-    /// and persist the session. Returns the active model after the switch.
-    ///
-    /// `model_request` is the original request string (it may carry an
-    /// explicit provider prefix like `openrouter:`); for provider-level
-    /// switches without a model request, pass the active model name.
+    /// Shared bookkeeping for /model, cycling, failover, and post-login switches.
+    /// Resets provider state, refreshes context and picker state, then persists
+    /// the session route and model. Returns the active model.
+    /// `model_request` may carry a provider prefix such as `openrouter:`.
     pub(super) fn finalize_model_switch(&mut self, model_request: &str) -> String {
         self.provider_session_id = None;
         self.session.provider_session_id = None;
@@ -60,10 +55,14 @@ impl App {
         &mut self,
         prompt: &crate::provider::ProviderFailoverPrompt,
     ) -> anyhow::Result<String> {
-        self.provider
-            .switch_active_provider_to(&prompt.to_provider)?;
+        if let Some(model) = prompt.to_model.as_deref() {
+            self.provider.set_model(model)?;
+        } else {
+            self.provider
+                .switch_active_provider_to(&prompt.to_provider)?;
+        }
         let active_model = self.provider.model();
-        Ok(self.finalize_model_switch(&active_model))
+        Ok(self.finalize_model_switch(prompt.to_model.as_deref().unwrap_or(&active_model)))
     }
 
     pub(super) fn cancel_pending_provider_failover(&mut self, notice: impl Into<String>) {
@@ -96,6 +95,10 @@ impl App {
         }
 
         self.pending_provider_failover = None;
+        if let Some(offer) = pending.remote_offer {
+            self.pending_fallback_offer = Some(offer);
+            return self.apply_pending_fallback_offer();
+        }
         match self.apply_provider_switch_for_failover(&pending.prompt) {
             Ok(active_model) => {
                 self.push_display_message(DisplayMessage::system(format!(
@@ -125,63 +128,14 @@ impl App {
     }
 
     fn handle_provider_failover_prompt(&mut self, prompt: crate::provider::ProviderFailoverPrompt) {
-        let input_summary = Self::format_failover_input_summary(&prompt);
-        let manual_message = format!(
-            "⚠ {} became unavailable - jcode did not resend your prompt to {} automatically.\n\nReason: {}\n\nRetrying elsewhere would send {}.\n\nTo switch manually now, use /model and pick a model from {}, then resend. {}",
-            prompt.from_label,
-            prompt.to_label,
-            prompt.reason,
-            input_summary,
-            prompt.to_label,
-            Self::failover_config_hint(),
-        );
-
-        match crate::config::Config::load()
-            .provider
-            .cross_provider_failover
-        {
-            crate::config::CrossProviderFailoverMode::Manual if !self.is_remote => {
-                self.push_display_message(DisplayMessage::system(manual_message));
-                self.set_status_notice(format!(
-                    "{} unavailable; switch manually if desired",
-                    prompt.from_label
-                ));
-            }
-            crate::config::CrossProviderFailoverMode::Countdown if !self.is_remote => {
-                self.pending_provider_failover = Some(super::PendingProviderFailover {
-                    prompt: prompt.clone(),
-                    deadline: Instant::now() + Duration::from_secs(3),
-                });
-                self.push_display_message(DisplayMessage::system(format!(
-                    "⚠ {} became unavailable - jcode will switch to {} in 3 seconds unless you cancel.\n\nReason: {}\n\nRetrying would send {}. Press Esc to cancel.\n\n{}",
-                    prompt.from_label,
-                    prompt.to_label,
-                    prompt.reason,
-                    input_summary,
-                    Self::failover_config_hint(),
-                )));
-                self.set_status_notice(format!(
-                    "Provider auto-switch → {} in 3s (Esc to cancel)",
-                    prompt.to_label
-                ));
-            }
-            _ => {
-                self.push_display_message(DisplayMessage::system(format!(
-                    "{}\n\nAutomatic countdown switching is only available in local sessions right now.",
-                    manual_message,
-                )));
-                self.set_status_notice(format!(
-                    "{} unavailable; manual switch suggested",
-                    prompt.from_label
-                ));
-            }
-        }
+        let remote_resend = self.current_remote_fallback_resend();
+        self.handle_provider_failover_prompt_with_payload(prompt, remote_resend);
     }
 
     /// The model routes to consider when computing an error fallback, working in
     /// both local and remote sessions. Mirrors the model-picker's route source so
     /// the offered fallback matches what `/model` would show.
-    fn fallback_candidate_routes(&self) -> Vec<crate::provider::ModelRoute> {
+    pub(super) fn fallback_candidate_routes(&self) -> Vec<crate::provider::ModelRoute> {
         if self.is_remote {
             if !self.remote_model_options.is_empty() {
                 self.remote_model_options.clone()

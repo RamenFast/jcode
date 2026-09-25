@@ -8,12 +8,22 @@ pub struct ProviderFailoverPrompt {
     pub from_label: String,
     pub to_provider: String,
     pub to_label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_model: Option<String>,
     pub reason: String,
     pub estimated_input_chars: usize,
     pub estimated_input_tokens: usize,
 }
 
 impl ProviderFailoverPrompt {
+    /// Standard OpenRouter is a paid aggregator route. It must never receive a
+    /// failed prompt through the automatic countdown path.
+    pub fn requires_user_approval(&self) -> bool {
+        self.to_model
+            .as_deref()
+            .is_some_and(|model| model.trim().to_ascii_lowercase().starts_with("openrouter:"))
+    }
+
     pub fn to_error_message(&self) -> String {
         let payload = serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string());
         format!(
@@ -147,6 +157,7 @@ mod tests {
             from_label: "Anthropic".to_string(),
             to_provider: "openai".to_string(),
             to_label: "OpenAI".to_string(),
+            to_model: Some("openai-oauth:gpt-5.6-sol".to_string()),
             reason: "rate limit".to_string(),
             estimated_input_chars: 1200,
             estimated_input_tokens: 300,
@@ -154,6 +165,26 @@ mod tests {
 
         let parsed = parse_failover_prompt_message(&prompt.to_error_message()).expect("prompt");
         assert_eq!(parsed, prompt);
+    }
+
+    #[test]
+    fn only_standard_openrouter_routes_require_user_approval() {
+        let mut prompt = ProviderFailoverPrompt {
+            from_provider: "openrouter".to_string(),
+            from_label: "Z.AI".to_string(),
+            to_provider: "openrouter".to_string(),
+            to_label: "OpenRouter".to_string(),
+            to_model: Some("openrouter:anthropic/claude-opus-5".to_string()),
+            reason: "provider unavailable".to_string(),
+            estimated_input_chars: 1_000,
+            estimated_input_tokens: 250,
+        };
+        assert!(prompt.requires_user_approval());
+
+        prompt.to_model = Some("zai:glm-5".to_string());
+        assert!(!prompt.requires_user_approval());
+        prompt.to_model = Some("openai-oauth:gpt-5.6-sol".to_string());
+        assert!(!prompt.requires_user_approval());
     }
 
     #[test]

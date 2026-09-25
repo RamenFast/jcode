@@ -97,6 +97,25 @@ fn test_parse_provider_hint_supports_known_values() {
 }
 
 #[test]
+fn test_standard_openrouter_credentials_do_not_autodetect_zai_profile() {
+    with_clean_provider_test_env(|| {
+        crate::env::set_var("ZHIPU_API_KEY", "test-zai-key");
+        assert!(!crate::provider::openrouter::has_credentials());
+
+        crate::env::set_var("OPENROUTER_API_KEY", "test-openrouter-key");
+        assert!(crate::provider::openrouter::has_credentials());
+        crate::env::remove_var("OPENROUTER_API_KEY");
+
+        crate::env::set_var("JCODE_OPENROUTER_API_KEY_NAME", "ZHIPU_API_KEY");
+        crate::env::set_var(
+            "JCODE_OPENROUTER_API_BASE",
+            "https://api.z.ai/api/coding/paas/v4",
+        );
+        assert!(crate::provider::openrouter::has_credentials());
+    });
+}
+
+#[test]
 fn test_active_provider_env_only_seeds_sessions_when_explicitly_selected() {
     with_clean_provider_test_env(|| {
         crate::env::set_var("JCODE_ACTIVE_PROVIDER", "openai");

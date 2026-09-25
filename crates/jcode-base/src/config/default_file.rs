@@ -320,6 +320,11 @@ preserve_reasoning_context = true
 # Try another account on the same provider before switching providers (default: true)
 # same_provider_account_failover = false
 cross_provider_failover = "countdown"
+# Optional ordered route chain. Jcode first retries another account on the
+# active provider, then offers the next route in this list. Each value uses the
+# same provider-prefixed model syntax as /model.
+# Standard OpenRouter routes always require explicit user approval before resend.
+# fallback_models = ["claude-oauth:claude-opus-5", "openai-oauth:gpt-5.6-sol", "zai:glm-5", "openrouter:anthropic/claude-opus-5"]
 # Copilot premium mode: "normal" (default), "one" (first msg only), "zero" (all free)
 # Set to "zero" if you have premium Copilot and want free requests
 # copilot_premium = "zero"
